@@ -69,6 +69,10 @@ Capability::Client::Client(decltype(nullptr))
 Capability::Client::Client(kj::Exception&& exception)
     : hook(newBrokenCap(kj::mv(exception))) {}
 
+kj::Maybe<kj::Promise<Capability::Client>> Capability::Server::shortenPath() {
+  return nullptr;
+}
+
 kj::Promise<void> Capability::Server::internalUnimplemented(
     const char* actualInterfaceName, uint64_t requestedTypeId) {
   return KJ_EXCEPTION(UNIMPLEMENTED, "Requested interface not implemented.",
@@ -500,11 +504,21 @@ public:
   }
 
   kj::Maybe<ClientHook&> getResolved() override {
-    return nullptr;
+    return resolved.map([](kj::Own<ClientHook>& hook) -> ClientHook& { return *hook; });
   }
 
   kj::Maybe<kj::Promise<kj::Own<ClientHook>>> whenMoreResolved() override {
-    return nullptr;
+    KJ_IF_MAYBE(r, resolved) {
+      return kj::Promise<kj::Own<ClientHook>>(r->get()->addRef());
+    } else {
+      return server->shortenPath().map([this](kj::Promise<Capability::Client> promise) {
+        return promise.then([this](Capability::Client&& cap) -> kj::Own<ClientHook> {
+          auto hook = ClientHook::from(kj::mv(cap));
+          resolved = hook->addRef();
+          return hook;
+        });
+      });
+    }
   }
 
   kj::Own<ClientHook> addRef() override {
@@ -528,6 +542,7 @@ private:
   kj::Own<Capability::Server> server;
   _::CapabilityServerSetBase* capServerSet = nullptr;
   void* ptr = nullptr;
+  kj::Maybe<kj::Own<ClientHook>> resolved;
 };
 
 kj::Own<ClientHook> Capability::Client::makeLocalClient(kj::Own<Capability::Server>&& server) {
@@ -708,19 +723,27 @@ kj::Promise<void*> CapabilityServerSetBase::getLocalServerInternal(Capability::C
   ClientHook* hook = client.hook.get();
 
   // Get the most-resolved-so-far version of the hook.
-  KJ_IF_MAYBE(h, hook->getResolved()) {
-    hook = h;
-  };
+  for (;;) {
+    KJ_IF_MAYBE(h, hook->getResolved()) {
+      hook = h;
+    } else {
+      break;
+    }
+  }
 
-  KJ_IF_MAYBE(p, hook->whenMoreResolved()) {
-    // This hook is an unresolved promise. We need to wait for it.
+  void* result = hook->getLocalServer(*this);
+  if (result != nullptr) {
+    return result;
+  } else KJ_IF_MAYBE(p, hook->whenMoreResolved()) {
+    // This hook is an unresolved promise. It might resolve eventually to a local server, so wait
+    // for it.
     return p->attach(hook->addRef())
         .then([this](kj::Own<ClientHook>&& resolved) {
       Capability::Client client(kj::mv(resolved));
       return getLocalServerInternal(client);
     });
   } else {
-    return hook->getLocalServer(*this);
+    return kj::implicitCast<void*>(nullptr);
   }
 }
 

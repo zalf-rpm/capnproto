@@ -78,7 +78,11 @@ class HttpOverCapnpFactory::CapnpToKjStreamAdapter final: public capnp::ByteStre
 
 public:
   CapnpToKjStreamAdapter(kj::Own<RequestState> requestState)
-      : requestState(kj::mv(requestState)) {}
+      : requestState(kj::mv(requestState)),
+        pathShortenerTask(
+            requestState->canceler.wrap(pathShortener.findShorterPath(
+              *KJ_REQUIRE_NONNULL(requestState->assertState<kj::Own<kj::AsyncOutputStream>>())))
+            .fork()) {}
 
   ~CapnpToKjStreamAdapter() noexcept(false) {
     KJ_IF_MAYBE(f, requestState->doneFulfiller) {
@@ -88,32 +92,54 @@ public:
     }
   }
 
+  kj::Maybe<kj::Promise<Capability::Client>> shortenPath() override {
+    return pathShortenerTask.addBranch().then([this]() -> kj::Promise<Capability::Client> {
+      KJ_IF_MAYBE(cap, pathShortener.getShortPath()) {
+        return kj::mv(*cap);
+      } else {
+        // There's no short path. We still want to throw an exception when the request is canceled,
+        // to encourage the client not to send us any more messages.
+
+        // Throw DISCONNECTED if already canceled.
+        requestState->assertState<kj::Own<kj::AsyncOutputStream>>();
+
+        // Otherwise arrange a promise that will throw it upon cancellation.
+        return requestState->canceler.wrap(
+            kj::Promise<Capability::Client>(kj::NEVER_DONE));
+      }
+    });
+  }
+
   kj::Promise<void> write(WriteContext context) override {
-    auto& stream = *KJ_REQUIRE_NONNULL(
-        requestState->assertState<kj::Own<kj::AsyncOutputStream>>(),
-        "already called end()");
+    return pathShortenerTask.addBranch().then([this, context]() mutable {
+      auto& stream = *KJ_REQUIRE_NONNULL(
+          requestState->assertState<kj::Own<kj::AsyncOutputStream>>(),
+          "already called end()");
 
-    auto data = context.getParams().getBytes();
+      auto data = context.getParams().getBytes();
 
-    // TODO(now): Deal with concurrent writes, or add streaming to Cap'n Proto.
-    return requestState->canceler.wrap(stream.write(data.begin(), data.size()));
+      // TODO(now): Deal with concurrent writes, or add streaming to Cap'n Proto.
+      return requestState->canceler.wrap(stream.write(data.begin(), data.size()));
+    });
   }
 
   kj::Promise<void> end(EndContext context) override {
-    KJ_REQUIRE_NONNULL(
-        requestState->assertState<kj::Own<kj::AsyncOutputStream>>(),
-        "already called end()");
-    requestState->state = RequestState::Done();
-    KJ_IF_MAYBE(f, requestState->doneFulfiller) {
-      f->fulfill();
-    }
-    return kj::READY_NOW;
+    return pathShortenerTask.addBranch().then([this, context]() mutable {
+      KJ_REQUIRE_NONNULL(
+          requestState->assertState<kj::Own<kj::AsyncOutputStream>>(),
+          "already called end()");
+      requestState->state = RequestState::Done();
+      KJ_IF_MAYBE(f, requestState->doneFulfiller) {
+        f->fulfill();
+      }
+    });
   }
 
   void directEnd() {
     // Called by KjToCapnpStreamAdapter when path is shortened.
 
     if (requestState->state.is<kj::Own<kj::AsyncOutputStream>>()) {
+      pathShortenerTask = nullptr;
       requestState->state = RequestState::Done();
       KJ_IF_MAYBE(f, requestState->doneFulfiller) {
         f->fulfill();
@@ -124,35 +150,67 @@ public:
   kj::Promise<void> write(const void* buffer, size_t size) {
     // Called by KjToCapnpStreamAdapter when path is shortened.
 
-    auto& stream = *KJ_REQUIRE_NONNULL(
-        requestState->assertState<kj::Own<kj::AsyncOutputStream>>(),
-        "already called end()");
+    return pathShortenerTask.addBranch().then([this, buffer, size]() mutable {
+      auto& stream = *KJ_REQUIRE_NONNULL(
+          requestState->assertState<kj::Own<kj::AsyncOutputStream>>(),
+          "already called end()");
 
-    return requestState->canceler.wrap(stream.write(buffer, size));
+      return requestState->canceler.wrap(stream.write(buffer, size));
+    });
   }
 
   kj::Promise<void> write(kj::ArrayPtr<const kj::ArrayPtr<const byte>> pieces) {
     // Called by KjToCapnpStreamAdapter when path is shortened.
 
-    auto& stream = *KJ_REQUIRE_NONNULL(
-        requestState->assertState<kj::Own<kj::AsyncOutputStream>>(),
-        "already called end()");
+    return pathShortenerTask.addBranch().then([this, pieces]() mutable {
+      auto& stream = *KJ_REQUIRE_NONNULL(
+          requestState->assertState<kj::Own<kj::AsyncOutputStream>>(),
+          "already called end()");
 
-    return requestState->canceler.wrap(stream.write(pieces));
+      return requestState->canceler.wrap(stream.write(pieces));
+    });
   }
 
   kj::Promise<uint64_t> pumpFrom(kj::AsyncInputStream& input, uint64_t amount) {
     // Called by KjToCapnpStreamAdapter when path is shortened.
 
-    auto& stream = *KJ_REQUIRE_NONNULL(
-        requestState->assertState<kj::Own<kj::AsyncOutputStream>>(),
-        "already called end()");
+    return pathShortenerTask.addBranch().then([this, &input, amount]() mutable {
+      auto& stream = *KJ_REQUIRE_NONNULL(
+          requestState->assertState<kj::Own<kj::AsyncOutputStream>>(),
+          "already called end()");
 
-    return requestState->canceler.wrap(input.pumpTo(stream, amount));
+      return requestState->canceler.wrap(input.pumpTo(stream, amount));
+    });
   }
 
 private:
   kj::Own<RequestState> requestState;
+
+  class PathShortener: private kj::AsyncInputStream {
+  public:
+    kj::Promise<void> findShorterPath(kj::AsyncOutputStream& output) {
+      return pumpTo(output).then([](uint64_t amount) {
+        // Any actual attempt to read from *this should have produced EOF immediately, so the pump
+        // should have returned 0.
+        KJ_ASSERT(amount == 0);
+      });
+    }
+
+    kj::Maybe<capnp::ByteStream::Client> getShortPath() {
+      // Call after findShorterPath() completes.
+      return shortPath;
+    }
+
+  private:
+    kj::Maybe<capnp::ByteStream::Client> shortPath;
+
+    kj::Promise<uint64_t> pumpTo(
+        kj::AsyncOutputStream& output, uint64_t amount = kj::maxValue) override;
+    kj::Promise<size_t> tryRead(void* buffer, size_t minBytes, size_t maxBytes) override;
+  };
+
+  PathShortener pathShortener;
+  kj::ForkedPromise<void> pathShortenerTask;
 };
 
 class HttpOverCapnpFactory::KjToCapnpStreamAdapter final: public kj::AsyncOutputStream {
@@ -178,6 +236,8 @@ public:
       inner.endRequest().send().detach([](kj::Exception&&){});
     }
   }
+
+  capnp::ByteStream::Client getInner() { return inner; }
 
   kj::Promise<void> write(const void* buffer, size_t size) override {
     KJ_IF_MAYBE(o, optimized) {
@@ -274,6 +334,53 @@ private:
     });
   }
 };
+
+kj::Promise<uint64_t> HttpOverCapnpFactory::CapnpToKjStreamAdapter::PathShortener::pumpTo(
+    kj::AsyncOutputStream& output, uint64_t amount) {
+  // Use output.tryPumpFrom() to ask the usual KJ machinery to find a shorter path for this stream.
+  // Pass-through streams will usually call back to out pumpTo() passing the inner stream.
+  KJ_IF_MAYBE(promise, output.tryPumpFrom(*this, amount)) {
+    // There's an even shorter path coming. tryPumpFrom() may have already called back to our own
+    // pumpTo(), or may call back to it later, or my eventually start calling tryRead() on us.
+    return kj::mv(*promise);
+  }
+
+  // No shorter path. Detect now if this is a KjToCapnpStreamAdapter.
+  KJ_IF_MAYBE(adapter, kj::dynamicDowncastIfAvailable<KjToCapnpStreamAdapter>(output)) {
+    // YES!
+    if (amount < uint64_t(kj::maxValue) / 2) {
+      // Wait crap, at some point our pump was reduced to be not the whole stream. Maybe someone
+      // has applied a length limit somewhere.
+      // TODO(soon): Figure out if this actually happens anywhere. If so, figure out what the
+      //   right way to handle it is.
+      static bool logged = false;
+      if (!logged) {
+        KJ_LOG(WARNING, "path shortening failed due to limited pump",
+                        amount, kj::getStackTrace());
+        logged = true;
+      }
+      return uint64_t(0);
+    }
+
+    shortPath = adapter->getInner();
+  } else {
+    // It's some other stream. Pretend we hit EOF right off the bat. Luckily this doesn't
+    // propagate EOF to the output -- you can pump multiple input streams to the same output
+    // stream in sequence. It just happens the first stream we pumped here was zero-size...
+    return uint64_t(0);
+  }
+}
+
+kj::Promise<size_t> HttpOverCapnpFactory::CapnpToKjStreamAdapter::PathShortener::tryRead(
+    void* buffer, size_t minBytes, size_t maxBytes) {
+  // Oops, someone tried to read from us. This most likely means we're writing to one end
+  // of an AsyncPipe and the other end tried to read from the pipe. We can conclude that we
+  // will NOT end up pumping to a KjToCapnpStreamAdapter.
+
+  // Luckily, we're allowed to say that whoops, we're already at EOF. This ends the pump and
+  // causes the reader to wait for more data.
+  return size_t(0);
+}
 
 // =======================================================================================
 
