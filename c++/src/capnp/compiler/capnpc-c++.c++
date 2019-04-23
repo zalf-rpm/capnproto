@@ -1854,12 +1854,12 @@ private:
     kj::StringTree sourceDefs;
   };
 
-  kj::StringTree makeReaderDef(kj::StringPtr fullName, kj::StringPtr unqualifiedParentType,
+  kj::StringTree makeReaderDef(kj::StringPtr moduleApi, kj::StringPtr fullName, kj::StringPtr unqualifiedParentType,
                                const TemplateContext& templateContext, bool isUnion,
                                kj::Array<kj::StringTree>&& methodDecls) {
     return kj::strTree(
         templateContext.allDecls(),
-        "class ", fullName, "::Reader {\n"
+        "class ", templateContext.isGeneric() ? "" : moduleApi, fullName, "::Reader {\n"
         "public:\n"
         "  typedef ", unqualifiedParentType, " Reads;\n"
         "\n"
@@ -1893,12 +1893,12 @@ private:
         "\n");
   }
 
-  kj::StringTree makeBuilderDef(kj::StringPtr fullName, kj::StringPtr unqualifiedParentType,
+  kj::StringTree makeBuilderDef(kj::StringPtr moduleApi, kj::StringPtr fullName, kj::StringPtr unqualifiedParentType,
                                 const TemplateContext& templateContext, bool isUnion,
                                 kj::Array<kj::StringTree>&& methodDecls) {
     return kj::strTree(
         templateContext.allDecls(),
-        "class ", fullName, "::Builder {\n"
+        "class ", templateContext.isGeneric() ? "" : moduleApi, fullName, "::Builder {\n"
         "public:\n"
         "  typedef ", unqualifiedParentType, " Builds;\n"
         "\n"
@@ -1928,13 +1928,13 @@ private:
         "\n");
   }
 
-  kj::StringTree makePipelineDef(kj::StringPtr fullName, kj::StringPtr unqualifiedParentType,
+  kj::StringTree makePipelineDef(kj::StringPtr  moduleApi, kj::StringPtr fullName, kj::StringPtr unqualifiedParentType,
                                  const TemplateContext& templateContext, bool isUnion,
                                  kj::Array<kj::StringTree>&& methodDecls) {
     return kj::strTree(
         "#if !CAPNP_LITE\n",
         templateContext.allDecls(),
-        "class ", fullName, "::Pipeline {\n"
+        "class ", templateContext.isGeneric() ? "" : moduleApi, fullName, "::Pipeline {\n"
         "public:\n"
         "  typedef ", unqualifiedParentType, " Pipelines;\n"
         "\n"
@@ -1963,7 +1963,7 @@ private:
         (!hasBrandDependencies ? "" :
             "    static const ::capnp::_::RawBrandedSchema::Dependency brandDependencies[];\n"),
         "    static const ::capnp::_::RawBrandedSchema specificBrand;\n"
-        "    static constexpr ::capnp::_::RawBrandedSchema const* brand() { "
+        "    static ::capnp::_::RawBrandedSchema const* brand() { "
         "return ::capnp::_::ChooseBrand<_capnpPrivate, ", templateContext.allArgs(), ">::brand(); }\n");
   }
 
@@ -1998,7 +1998,7 @@ private:
         "};\n");
   }
 
-  StructText makeStructText(kj::StringPtr scope, kj::StringPtr name, StructSchema schema,
+  StructText makeStructText(kj::StringPtr moduleApi, kj::StringPtr scope, kj::StringPtr name, StructSchema schema,
                             kj::Array<kj::StringTree> nestedTypeDecls,
                             const TemplateContext& templateContext) {
     auto proto = schema.getProto();
@@ -2028,8 +2028,7 @@ private:
         templates, "constexpr uint16_t ", fullName, "::_capnpPrivate::dataWordSize;\n",
         templates, "constexpr uint16_t ", fullName, "::_capnpPrivate::pointerCount;\n"
         "#if !CAPNP_LITE\n",
-        templates, "constexpr ::capnp::Kind ", fullName, "::_capnpPrivate::kind;\n",
-        templates, "constexpr ::capnp::_::RawSchema const* ", fullName, "::_capnpPrivate::schema;\n");
+			  templates, "constexpr ::capnp::Kind ", fullName, "::_capnpPrivate::kind;\n");
 
     if (templateContext.isGeneric()) {
       auto brandInitializers = makeBrandInitializers(templateContext, schema);
@@ -2046,7 +2045,7 @@ private:
     } else {
       declareText = kj::strTree(kj::mv(declareText),
           "    #if !CAPNP_LITE\n"
-          "    static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }\n"
+          "    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }\n"
           "    #endif  // !CAPNP_LITE\n");
     }
 
@@ -2091,11 +2090,11 @@ private:
           "\n"),
 
       kj::strTree(
-          makeReaderDef(fullName, name, templateContext, structNode.getDiscriminantCount() != 0,
+          makeReaderDef(moduleApi, fullName, name, templateContext, structNode.getDiscriminantCount() != 0,
                         KJ_MAP(f, fieldTexts) { return kj::mv(f.readerMethodDecls); }),
-          makeBuilderDef(fullName, name, templateContext, structNode.getDiscriminantCount() != 0,
+          makeBuilderDef(moduleApi, fullName, name, templateContext, structNode.getDiscriminantCount() != 0,
                          KJ_MAP(f, fieldTexts) { return kj::mv(f.builderMethodDecls); }),
-          makePipelineDef(fullName, name, templateContext, structNode.getDiscriminantCount() != 0,
+          makePipelineDef(moduleApi, fullName, name, templateContext, structNode.getDiscriminantCount() != 0,
                           KJ_MAP(f, fieldTexts) { return kj::mv(f.pipelineMethodDecls); })),
 
       kj::strTree(
@@ -2279,7 +2278,7 @@ private:
     }
   }
 
-  InterfaceText makeInterfaceText(kj::StringPtr scope, kj::StringPtr name, InterfaceSchema schema,
+  InterfaceText makeInterfaceText(kj::StringPtr moduleApi, kj::StringPtr scope, kj::StringPtr name, InterfaceSchema schema,
                                   kj::Array<kj::StringTree> nestedTypeDecls,
                                   const TemplateContext& templateContext) {
     auto fullName = kj::str(scope, name, templateContext.args());
@@ -2317,11 +2316,10 @@ private:
          "  struct _capnpPrivate {\n"
          "    CAPNP_DECLARE_INTERFACE_HEADER(", hexId, ")\n");
 
-    kj::StringTree defineText = kj::strTree(
-        "// ", fullName, "\n",
-        "#if !CAPNP_LITE\n",
-        templates, "constexpr ::capnp::Kind ", fullName, "::_capnpPrivate::kind;\n",
-        templates, "constexpr ::capnp::_::RawSchema const* ", fullName, "::_capnpPrivate::schema;\n");
+		kj::StringTree defineText = kj::strTree(
+			"// ", fullName, "\n",
+			"#if !CAPNP_LITE\n",
+			templates, "constexpr ::capnp::Kind ", fullName, "::_capnpPrivate::kind;\n");
 
     if (templateContext.isGeneric()) {
       auto brandInitializers = makeBrandInitializers(templateContext, schema);
@@ -2335,7 +2333,7 @@ private:
               templateContext, fullName, kj::str(hexId), kj::mv(brandInitializers)));
     } else {
       declareText = kj::strTree(kj::mv(declareText),
-        "    static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }\n");
+        "    static ::capnp::_::RawBrandedSchema const* const brand() { return &schema()->defaultBrand; }\n");
     }
 
     declareText = kj::strTree(kj::mv(declareText), "  };\n  #endif  // !CAPNP_LITE");
@@ -2366,7 +2364,7 @@ private:
       kj::strTree(
           "#if !CAPNP_LITE\n",
           templateContext.allDecls(),
-          "class ", fullName, "::Client\n"
+          "class ", templateContext.isGeneric() ? "" : moduleApi, fullName, "::Client\n"
           "    : public virtual ::capnp::Capability::Client",
           KJ_MAP(s, superclasses) {
             return kj::strTree(",\n      public virtual ", s.typeName.strNoTypename(), "::Client");
@@ -2395,7 +2393,7 @@ private:
           "};\n"
           "\n",
           templateContext.allDecls(),
-          "class ", fullName, "::Server\n"
+          "class ", templateContext.isGeneric() ? "" : moduleApi, fullName, "::Server\n"
           "    : public virtual ::capnp::Capability::Server",
           KJ_MAP(s, superclasses) {
             return kj::strTree(",\n      public virtual ", s.typeName.strNoTypename(), "::Server");
@@ -2502,7 +2500,7 @@ private:
     kj::StringTree def;
   };
 
-  ConstText makeConstText(kj::StringPtr scope, kj::StringPtr name, ConstSchema schema,
+  ConstText makeConstText(kj::StringPtr moduleApi, kj::StringPtr scope, kj::StringPtr name, ConstSchema schema,
                           const TemplateContext& templateContext) {
     auto proto = schema.getProto();
     auto constProto = proto.getConst();
@@ -2557,7 +2555,7 @@ private:
             "::capnp::_::ConstText<", schema.as<Text>().size(), ">").flatten();
         return ConstText {
           true,
-          kj::strTree(linkage, "const ", constType, ' ', upperCase, ";\n"),
+          kj::strTree(moduleApi, linkage, "const ", constType, ' ', upperCase, ";\n"),
           kj::strTree("const ", constType, ' ', scope, upperCase, "(::capnp::schemas::b_",
                       kj::hex(proto.getId()), ".words + ", schema.getValueSchemaOffset(), ");\n")
         };
@@ -2568,7 +2566,7 @@ private:
             "::capnp::_::ConstData<", schema.as<Data>().size(), ">").flatten();
         return ConstText {
           true,
-          kj::strTree(linkage, "const ", constType, ' ', upperCase, ";\n"),
+          kj::strTree(moduleApi, linkage, "const ", constType, ' ', upperCase, ";\n"),
           kj::strTree("const ", constType, ' ', scope, upperCase, "(::capnp::schemas::b_",
                       kj::hex(proto.getId()), ".words + ", schema.getValueSchemaOffset(), ");\n")
         };
@@ -2579,7 +2577,7 @@ private:
             "::capnp::_::ConstStruct<", typeName_, ">").flatten();
         return ConstText {
           true,
-          kj::strTree(linkage, "const ", constType, ' ', upperCase, ";\n"),
+          kj::strTree(moduleApi, linkage, "const ", constType, ' ', upperCase, ";\n"),
           kj::strTree("const ", constType, ' ', scope, upperCase, "(::capnp::schemas::b_",
                       kj::hex(proto.getId()), ".words + ", schema.getValueSchemaOffset(), ");\n")
         };
@@ -2591,7 +2589,7 @@ private:
             .flatten();
         return ConstText {
           true,
-          kj::strTree(linkage, "const ", constType, ' ', upperCase, ";\n"),
+          kj::strTree(moduleApi, linkage, "const ", constType, ' ', upperCase, ";\n"),
           kj::strTree("const ", constType, ' ', scope, upperCase, "(::capnp::schemas::b_",
                       kj::hex(proto.getId()), ".words + ", schema.getValueSchemaOffset(), ");\n")
         };
@@ -2617,7 +2615,7 @@ private:
     kj::StringTree sourceFileDefs;
   };
 
-  NodeText makeNodeText(kj::StringPtr namespace_, kj::StringPtr scope,
+  NodeText makeNodeText(kj::StringPtr moduleApi, kj::StringPtr namespace_, kj::StringPtr scope,
                         kj::StringPtr name, Schema schema,
                         const TemplateContext& parentTemplateContext) {
     // `templateContext` is something like "template <typename T>\ntemplate <typename U>\n"
@@ -2637,7 +2635,7 @@ private:
     kj::Vector<NodeText> nestedTexts(proto.getNestedNodes().size());
     for (auto nested: proto.getNestedNodes()) {
       nestedTexts.add(makeNodeText(
-          namespace_, subScope, nested.getName(), schemaLoader.getUnbound(nested.getId()),\
+          moduleApi, namespace_, subScope, nested.getName(), schemaLoader.getUnbound(nested.getId()),\
           templateContext));
     };
 
@@ -2645,7 +2643,7 @@ private:
       for (auto field: proto.getStruct().getFields()) {
         if (field.isGroup()) {
           nestedTexts.add(makeNodeText(
-              namespace_, subScope, toTitleCase(protoName(field)),
+              moduleApi, namespace_, subScope, toTitleCase(protoName(field)),
               schemaLoader.getUnbound(field.getGroup().getTypeId()),
               templateContext));
         }
@@ -2656,7 +2654,7 @@ private:
           Schema params = schemaLoader.getUnbound(method.getParamStructType());
           auto paramsProto = schemaLoader.getUnbound(method.getParamStructType()).getProto();
           if (paramsProto.getScopeId() == 0) {
-            nestedTexts.add(makeNodeText(namespace_, subScope,
+            nestedTexts.add(makeNodeText(moduleApi, namespace_, subScope,
                 toTitleCase(kj::str(protoName(method), "Params")), params, templateContext));
           }
         }
@@ -2664,7 +2662,7 @@ private:
           Schema results = schemaLoader.getUnbound(method.getResultStructType());
           auto resultsProto = schemaLoader.getUnbound(method.getResultStructType()).getProto();
           if (resultsProto.getScopeId() == 0) {
-            nestedTexts.add(makeNodeText(namespace_, subScope,
+            nestedTexts.add(makeNodeText(moduleApi, namespace_, subScope,
                 toTitleCase(kj::str(protoName(method), "Results")), results, templateContext));
           }
         }
@@ -2683,7 +2681,7 @@ private:
     }, "\n   ");
 
     auto schemaDecl = kj::strTree(
-        "CAPNP_DECLARE_SCHEMA(", hexId, ");\n");
+        "CAPNP_DECLARE_SCHEMA_2(", hexId, ", ", moduleApi, ");\n");
 
     std::set<uint64_t> deps;
     enumerateDeps(proto, deps);
@@ -2726,7 +2724,7 @@ private:
         deps.size() == 0 ? kj::strTree() : kj::strTree(
             "static const ::capnp::_::RawSchema* const d_", hexId, "[] = {\n",
             KJ_MAP(depId, deps) {
-              return kj::strTree("  &s_", kj::hex(depId), ",\n");
+              return kj::strTree("  sp_", kj::hex(depId), ",\n");
             },
             "};\n"),
         membersByName.size() == 0 ? kj::strTree() : kj::strTree(
@@ -2738,7 +2736,7 @@ private:
             kj::StringTree(KJ_MAP(index, membersByDiscrim) { return kj::strTree(index); }, ", "),
             "};\n"),
         brandDeps.size() == 0 ? kj::strTree() : kj::strTree(
-            "KJ_CONSTEXPR(const) ::capnp::_::RawBrandedSchema::Dependency bd_", hexId, "[] = ",
+            "const ::capnp::_::RawBrandedSchema::Dependency bd_", hexId, "[] = ",
             kj::mv(brandDeps), ";\n"),
         "const ::capnp::_::RawSchema s_", hexId, " = {\n"
         "  0x", hexId, ", b_", hexId, ".words, ", rawSchema.size(), ", ",
@@ -2751,10 +2749,11 @@ private:
             "bd_", hexId, ", 0, " "sizeof(bd_", hexId, ") / sizeof(bd_", hexId, "[0])"),
         ", nullptr }\n"
         "};\n"
+			  "::capnp::_::RawSchema const* const sp_", hexId, " = &s_", hexId, ";\n"
         "#endif  // !CAPNP_LITE\n");
 
     NodeText top = makeNodeTextWithoutNested(
-        namespace_, scope, name, schema,
+        moduleApi, namespace_, scope, name, schema,
         KJ_MAP(n, nestedTexts) { return kj::mv(n.outerTypeDecl); },
         templateContext);
 
@@ -2798,7 +2797,7 @@ private:
     return result;
   }
 
-  NodeText makeNodeTextWithoutNested(kj::StringPtr namespace_, kj::StringPtr scope,
+  NodeText makeNodeTextWithoutNested(kj::StringPtr moduleApi, kj::StringPtr namespace_, kj::StringPtr scope,
                                      kj::StringPtr name, Schema schema,
                                      kj::Array<kj::StringTree> nestedTypeDecls,
                                      const TemplateContext& templateContext) {
@@ -2814,7 +2813,7 @@ private:
 
       case schema::Node::STRUCT: {
         StructText structText =
-            makeStructText(scope, name, schema.asStruct(), kj::mv(nestedTypeDecls),
+            makeStructText(moduleApi, scope, name, schema.asStruct(), kj::mv(nestedTypeDecls),
                            templateContext);
 
         return NodeText {
@@ -2848,12 +2847,12 @@ private:
           kj::strTree(
               // We declare enums in the capnp::schemas namespace and then typedef them into
               // place because we don't want them to be parameterized for generics.
-              "enum class ", name, "_", hexId, ": uint16_t {\n",
+              "enum class ", moduleApi, name, "_", hexId, ": uint16_t {\n",
               KJ_MAP(e, enumerants) {
                 return kj::strTree("  ", toUpperCase(protoName(e.getProto())), ",\n");
               },
               "};\n"
-              "CAPNP_DECLARE_ENUM(", name, ", ", hexId, ");\n"),
+              "CAPNP_DECLARE_ENUM_2(", name, ", ", hexId, ", ", moduleApi, ");\n"),
           kj::strTree(
               "CAPNP_DEFINE_ENUM(", name, "_", hexId, ", ", hexId, ");\n"),
 
@@ -2865,7 +2864,7 @@ private:
         hasInterfaces = true;
 
         InterfaceText interfaceText =
-            makeInterfaceText(scope, name, schema.asInterface(), kj::mv(nestedTypeDecls),
+            makeInterfaceText(moduleApi, scope, name, schema.asInterface(), kj::mv(nestedTypeDecls),
                               templateContext);
 
         return NodeText {
@@ -2882,7 +2881,7 @@ private:
       }
 
       case schema::Node::CONST: {
-        auto constText = makeConstText(scope, name, schema.asConst(), templateContext);
+        auto constText = makeConstText(moduleApi, scope, name, schema.asConst(), templateContext);
 
         return NodeText {
           scope.size() == 0 ? kj::strTree() : kj::strTree("  ", kj::mv(constText.decl)),
@@ -2927,6 +2926,7 @@ private:
     usedImports.clear();
 
     auto node = schema.getProto();
+		auto moduleApi = kj::str("CAPNP_", kj::hex(node.getId()), "_API ");
     auto displayName = node.getDisplayName();
 
     kj::Vector<kj::ArrayPtr<const char>> namespaceParts;
@@ -2957,7 +2957,7 @@ private:
     }
 
     auto nodeTexts = KJ_MAP(nested, node.getNestedNodes()) {
-      return makeNodeText(namespacePrefix, "", nested.getName(),
+      return makeNodeText(moduleApi, namespacePrefix, "", nested.getName(),
                           schemaLoader.getUnbound(nested.getId()), TemplateContext());
     };
 
@@ -2980,6 +2980,21 @@ private:
           "\n"
           "#pragma once\n"
           "\n"
+					"#ifndef ", moduleApi, "\n",
+					"#if defined(_MSC_VER)", "\n",
+					"#if defined(CAPNP_", kj::hex(node.getId()) ,"_EXPORTS)", "\n",
+					"#define ", moduleApi, " __declspec(dllexport)", "\n",
+					"#else", "\n",
+					"#if defined(_LIB)", "\n",
+					"#define ", moduleApi, "\n",
+					"#else", "\n",
+					"#define ", moduleApi, " __declspec(dllimport)", "\n",
+					"#endif", "\n",
+					"#endif", "\n",
+					"#else", "\n",
+					"#define ", moduleApi, "\n",
+					"#endif", "\n",
+					"#endif", "\n",
           "#include <capnp/generated-header-support.h>\n"
           "#include <kj/windows-sanity.h>\n",  // work-around macro conflict with VOID
           hasInterfaces ? kj::strTree(
