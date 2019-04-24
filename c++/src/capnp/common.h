@@ -38,6 +38,74 @@
 #include <kj/units.h>
 #endif
 
+#ifndef CAPNP_API
+#if defined(_MSC_VER)
+#if defined(CAPNP_EXPORTS)
+#define CAPNP_API __declspec(dllexport)
+#else
+#if defined(_LIB)
+#define CAPNP_API
+#else
+#define CAPNP_API __declspec(dllimport)
+#endif
+#endif
+#else
+#define CAPNP_API
+#endif
+#endif
+
+#ifndef CAPNP_RPC_API
+#if defined(_MSC_VER)
+#if defined(CAPNP_RPC_EXPORTS)
+#define CAPNP_RPC_API __declspec(dllexport)
+#else
+#if defined(CAPNP_EXPORTS)
+#define CAPNP_RPC_API
+#else
+#if defined(_LIB)
+#define CAPNP_RPC_API
+#else
+#define CAPNP_RPC_API __declspec(dllimport)
+#endif
+#endif
+#endif
+#else
+#define CAPNP_RPC_API
+#endif
+#endif
+
+#ifndef CAPNP_C_API
+#if defined(_MSC_VER)
+#if defined(CAPNP_C_EXPORTS)
+#define CAPNP_C_API __declspec(dllexport)
+#else
+#if defined(_LIB)
+#define CAPNP_C_API
+#else
+#define CAPNP_C_API __declspec(dllimport)
+#endif
+#endif
+#else
+#define CAPNP_C_API
+#endif
+#endif
+
+#ifndef CAPNP_JSON_API
+#if defined(_MSC_VER)
+#if defined(CAPNP_JSON_EXPORTS)
+#define CAPNP_JSON_API __declspec(dllexport)
+#else
+#if defined(_LIB)
+#define CAPNP_JSON_API
+#else
+#define CAPNP_JSON_API __declspec(dllimport)
+#endif
+#endif
+#else
+#define CAPNP_JSON_API
+#endif
+#endif
+
 namespace capnp {
 
 #define CAPNP_VERSION_MAJOR 0
