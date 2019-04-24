@@ -2045,7 +2045,7 @@ private:
     } else {
       declareText = kj::strTree(kj::mv(declareText),
           "    #if !CAPNP_LITE\n"
-          "    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }\n"
+          "    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }\n"
           "    #endif  // !CAPNP_LITE\n");
     }
 
