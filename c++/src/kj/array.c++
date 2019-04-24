@@ -41,8 +41,8 @@ void ExceptionSafeArrayUtil::destroyAll() {
   }
 }
 
-const DestructorOnlyArrayDisposer DestructorOnlyArrayDisposer::instance =
-    DestructorOnlyArrayDisposer();
+//const DestructorOnlyArrayDisposer DestructorOnlyArrayDisposer::instance =
+//    DestructorOnlyArrayDisposer();
 
 void DestructorOnlyArrayDisposer::disposeImpl(
     void* firstElement, size_t elementSize, size_t elementCount,
@@ -53,7 +53,7 @@ void DestructorOnlyArrayDisposer::disposeImpl(
   }
 }
 
-const NullArrayDisposer NullArrayDisposer::instance = NullArrayDisposer();
+//const NullArrayDisposer NullArrayDisposer::instance = NullArrayDisposer();
 
 void NullArrayDisposer::disposeImpl(
     void* firstElement, size_t elementSize, size_t elementCount,
@@ -103,7 +103,7 @@ void HeapArrayDisposer::disposeImpl(
   }
 }
 
-const HeapArrayDisposer HeapArrayDisposer::instance = HeapArrayDisposer();
+//const HeapArrayDisposer HeapArrayDisposer::instance = HeapArrayDisposer();
 
 }  // namespace _ (private)
 }  // namespace kj

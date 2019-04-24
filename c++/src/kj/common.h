@@ -160,6 +160,54 @@ typedef unsigned char byte;
 #define KJ_NOINLINE __attribute__((noinline))
 #endif
 
+#ifndef KJ_API
+#if defined(_MSC_VER)
+#if defined(KJ_EXPORTS)
+#define KJ_API __declspec(dllexport)
+#else
+#if defined(_LIB)
+#define KJ_API
+#else
+#define KJ_API __declspec(dllimport)
+#endif
+#endif
+#else
+#define KJ_API
+#endif
+#endif
+
+#ifndef KJ_ASYNC_API
+#if defined(_MSC_VER)
+#if defined(KJ_ASYNC_EXPORTS)
+#define KJ_ASYNC_API __declspec(dllexport)
+#else
+#if defined(_LIB)
+#define KJ_ASYNC_API
+#else
+#define KJ_ASYNC_API __declspec(dllimport)
+#endif
+#endif
+#else
+#define KJ_ASYNC_API
+#endif
+#endif
+
+#ifndef KJ_HTTP_API
+#if defined(_MSC_VER)
+#if defined(KJ_HTTP_EXPORTS)
+#define KJ_HTTP_API __declspec(dllexport)
+#else
+#if defined(_LIB)
+#define KJ_HTTP_API
+#else
+#define KJ_HTTP_API __declspec(dllimport)
+#endif
+#endif
+#else
+#define KJ_HTTP_API
+#endif
+#endif
+
 #if defined(_MSC_VER) && !__clang__
 #define KJ_NORETURN(prototype) __declspec(noreturn) prototype
 #define KJ_UNUSED

@@ -103,7 +103,10 @@ private:
 
 class DestructorOnlyArrayDisposer: public ArrayDisposer {
 public:
-  static const DestructorOnlyArrayDisposer instance;
+	static const DestructorOnlyArrayDisposer& instance() {
+		static const DestructorOnlyArrayDisposer doad; return doad;
+	}
+	//static const DestructorOnlyArrayDisposer instance;
 
   void disposeImpl(void* firstElement, size_t elementSize, size_t elementCount,
                    size_t capacity, void (*destroyElement)(void*)) const override;
@@ -114,7 +117,8 @@ class NullArrayDisposer: public ArrayDisposer {
   // actually own its content.
 
 public:
-  static const NullArrayDisposer instance;
+	static const NullArrayDisposer& instance() { static const NullArrayDisposer nad; return nad; }
+  //static const NullArrayDisposer instance;
 
   void disposeImpl(void* firstElement, size_t elementSize, size_t elementCount,
                    size_t capacity, void (*destroyElement)(void*)) const override;
@@ -276,7 +280,8 @@ public:
   template <typename T>
   static T* allocateUninitialized(size_t count);
 
-  static const HeapArrayDisposer instance;
+	static const HeapArrayDisposer& instance() { static const HeapArrayDisposer had; return had; }
+  //static const HeapArrayDisposer instance;
 
 private:
   static void* allocateImpl(size_t elementSize, size_t elementCount, size_t capacity,
@@ -299,7 +304,7 @@ inline Array<T> heapArray(size_t size) {
   // Much like `heap<T>()` from memory.h, allocates a new array on the heap.
 
   return Array<T>(_::HeapArrayDisposer::allocate<T>(size), size,
-                  _::HeapArrayDisposer::instance);
+                  _::HeapArrayDisposer::instance());
 }
 
 template <typename T> Array<T> heapArray(const T* content, size_t size);
@@ -509,7 +514,7 @@ inline ArrayBuilder<T> heapArrayBuilder(size_t size) {
   // manually by calling `add()`.
 
   return ArrayBuilder<T>(_::HeapArrayDisposer::allocateUninitialized<RemoveConst<T>>(size),
-                         size, _::HeapArrayDisposer::instance);
+                         size, _::HeapArrayDisposer::instance());
 }
 
 // =======================================================================================

@@ -155,7 +155,9 @@ public:
   // TODO(someday): Fill this out with more common headers.
 
 #define DECLARE_HEADER(id, name) \
-  static const HttpHeaderId id;
+  static const HttpHeaderId& id();
+	//static const HttpHeaderId& id(){ static const HttpHeaderId hhi(nullptr, HttpHeaders::BuiltinIndices::id); return hhi; }
+	//static const HttpHeaderId id;
   // Declare a constant for each builtin header, e.g.: HttpHeaderId::CONNECTION
 
   KJ_HTTP_FOR_EACH_BUILTIN_HEADER(DECLARE_HEADER);

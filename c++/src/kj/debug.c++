@@ -40,7 +40,7 @@
 namespace kj {
 namespace _ {  // private
 
-LogSeverity Debug::minSeverity = LogSeverity::WARNING;
+//LogSeverity Debug::minSeverity = LogSeverity::WARNING;
 
 namespace {
 

@@ -366,10 +366,10 @@ public:
   };
 #endif
 
-  static inline bool shouldLog(LogSeverity severity) { return severity >= minSeverity; }
+  static inline bool shouldLog(LogSeverity severity) { return severity >= minSeverity(); }
   // Returns whether messages of the given severity should be logged.
 
-  static inline void setLogLevel(LogSeverity severity) { minSeverity = severity; }
+  static inline void setLogLevel(LogSeverity severity) { minSeverity() = severity; }
   // Set the minimum message severity which will be logged.
   //
   // TODO(someday):  Expose publicly.
@@ -477,7 +477,8 @@ public:
   static String makeDescription(const char* macroArgs, Params&&... params);
 
 private:
-  static LogSeverity minSeverity;
+	static LogSeverity& minSeverity() { static LogSeverity ls = LogSeverity::WARNING; return ls; }
+	//static LogSeverity minSeverity;
 
   static void logInternal(const char* file, int line, LogSeverity severity, const char* macroArgs,
                           ArrayPtr<String> argValues);
