@@ -83,8 +83,8 @@ KJ_TEST("HttpHeaderTable") {
 
   KJ_EXPECT(table->idCount() == builtinHeaderCount + 2);
 
-  KJ_EXPECT(host == HttpHeaderId::HOST);
-  KJ_EXPECT(host != HttpHeaderId::DATE);
+  KJ_EXPECT(host == HttpHeaderId::HOST());
+  KJ_EXPECT(host != HttpHeaderId::DATE());
   KJ_EXPECT(host2 == host);
 
   KJ_EXPECT(host != fooBar);
@@ -96,13 +96,13 @@ KJ_TEST("HttpHeaderTable") {
   KJ_EXPECT(kj::str(host2) == "Host");
   KJ_EXPECT(kj::str(fooBar) == "Foo-Bar");
   KJ_EXPECT(kj::str(bazQux) == "baz-qux");
-  KJ_EXPECT(kj::str(HttpHeaderId::HOST) == "Host");
+  KJ_EXPECT(kj::str(HttpHeaderId::HOST()) == "Host");
 
-  KJ_EXPECT(table->idToString(HttpHeaderId::DATE) == "Date");
+  KJ_EXPECT(table->idToString(HttpHeaderId::DATE()) == "Date");
   KJ_EXPECT(table->idToString(fooBar) == "Foo-Bar");
 
-  KJ_EXPECT(KJ_ASSERT_NONNULL(table->stringToId("Date")) == HttpHeaderId::DATE);
-  KJ_EXPECT(KJ_ASSERT_NONNULL(table->stringToId("dATE")) == HttpHeaderId::DATE);
+  KJ_EXPECT(KJ_ASSERT_NONNULL(table->stringToId("Date")) == HttpHeaderId::DATE());
+  KJ_EXPECT(KJ_ASSERT_NONNULL(table->stringToId("dATE")) == HttpHeaderId::DATE());
   KJ_EXPECT(KJ_ASSERT_NONNULL(table->stringToId("Foo-Bar")) == fooBar);
   KJ_EXPECT(KJ_ASSERT_NONNULL(table->stringToId("foo-BAR")) == fooBar);
   KJ_EXPECT(table->stringToId("foobar") == nullptr);
@@ -130,13 +130,13 @@ KJ_TEST("HttpHeaders::parseRequest") {
 
   KJ_EXPECT(result.method == HttpMethod::POST);
   KJ_EXPECT(result.url == "/some/path");
-  KJ_EXPECT(KJ_ASSERT_NONNULL(headers.get(HttpHeaderId::HOST)) == "example.com");
-  KJ_EXPECT(KJ_ASSERT_NONNULL(headers.get(HttpHeaderId::DATE)) == "early");
+  KJ_EXPECT(KJ_ASSERT_NONNULL(headers.get(HttpHeaderId::HOST())) == "example.com");
+  KJ_EXPECT(KJ_ASSERT_NONNULL(headers.get(HttpHeaderId::DATE())) == "early");
   KJ_EXPECT(KJ_ASSERT_NONNULL(headers.get(fooBar)) == "Baz");
   KJ_EXPECT(headers.get(bazQux) == nullptr);
-  KJ_EXPECT(headers.get(HttpHeaderId::CONTENT_TYPE) == nullptr);
-  KJ_EXPECT(KJ_ASSERT_NONNULL(headers.get(HttpHeaderId::CONTENT_LENGTH)) == "123");
-  KJ_EXPECT(headers.get(HttpHeaderId::TRANSFER_ENCODING) == nullptr);
+  KJ_EXPECT(headers.get(HttpHeaderId::CONTENT_TYPE()) == nullptr);
+  KJ_EXPECT(KJ_ASSERT_NONNULL(headers.get(HttpHeaderId::CONTENT_LENGTH())) == "123");
+  KJ_EXPECT(headers.get(HttpHeaderId::TRANSFER_ENCODING()) == nullptr);
 
   std::map<kj::StringPtr, kj::StringPtr> unpackedHeaders;
   headers.forEach([&](kj::StringPtr name, kj::StringPtr value) {
@@ -180,13 +180,13 @@ KJ_TEST("HttpHeaders::parseResponse") {
 
   KJ_EXPECT(result.statusCode == 418);
   KJ_EXPECT(result.statusText == "I'm a teapot");
-  KJ_EXPECT(KJ_ASSERT_NONNULL(headers.get(HttpHeaderId::HOST)) == "example.com");
-  KJ_EXPECT(KJ_ASSERT_NONNULL(headers.get(HttpHeaderId::DATE)) == "early");
+  KJ_EXPECT(KJ_ASSERT_NONNULL(headers.get(HttpHeaderId::HOST())) == "example.com");
+  KJ_EXPECT(KJ_ASSERT_NONNULL(headers.get(HttpHeaderId::DATE())) == "early");
   KJ_EXPECT(KJ_ASSERT_NONNULL(headers.get(fooBar)) == "Baz");
   KJ_EXPECT(headers.get(bazQux) == nullptr);
-  KJ_EXPECT(headers.get(HttpHeaderId::CONTENT_TYPE) == nullptr);
-  KJ_EXPECT(KJ_ASSERT_NONNULL(headers.get(HttpHeaderId::CONTENT_LENGTH)) == "123");
-  KJ_EXPECT(headers.get(HttpHeaderId::TRANSFER_ENCODING) == nullptr);
+  KJ_EXPECT(headers.get(HttpHeaderId::CONTENT_TYPE()) == nullptr);
+  KJ_EXPECT(KJ_ASSERT_NONNULL(headers.get(HttpHeaderId::CONTENT_LENGTH())) == "123");
+  KJ_EXPECT(headers.get(HttpHeaderId::TRANSFER_ENCODING()) == nullptr);
 
   std::map<kj::StringPtr, kj::StringPtr> unpackedHeaders;
   headers.forEach([&](kj::StringPtr name, kj::StringPtr value) {
@@ -270,7 +270,7 @@ KJ_TEST("HttpHeaders validation") {
   KJ_EXPECT_THROW_MESSAGE("invalid header name", headers.add("Invalid Name", "value"));
   KJ_EXPECT_THROW_MESSAGE("invalid header name", headers.add("Invalid@Name", "value"));
 
-  KJ_EXPECT_THROW_MESSAGE("invalid header value", headers.set(HttpHeaderId::HOST, "in\nvalid"));
+  KJ_EXPECT_THROW_MESSAGE("invalid header value", headers.set(HttpHeaderId::HOST(), "in\nvalid"));
   KJ_EXPECT_THROW_MESSAGE("invalid header value", headers.add("Valid-Name", "in\nvalid"));
 }
 
@@ -662,7 +662,7 @@ kj::ArrayPtr<const HttpRequestTestCase> requestTestCases() {
 
       HttpMethod::GET,
       "/foo/bar",
-      {{HttpHeaderId::HOST, "example.com"}},
+      {{HttpHeaderId::HOST(), "example.com"}},
       uint64_t(0), {},
     },
 
@@ -673,7 +673,7 @@ kj::ArrayPtr<const HttpRequestTestCase> requestTestCases() {
 
       HttpMethod::HEAD,
       "/foo/bar",
-      {{HttpHeaderId::HOST, "example.com"}},
+      {{HttpHeaderId::HOST(), "example.com"}},
       uint64_t(0), {},
     },
 
@@ -688,8 +688,8 @@ kj::ArrayPtr<const HttpRequestTestCase> requestTestCases() {
       HttpMethod::POST,
       "/",
       {
-        {HttpHeaderId::HOST, "example.com"},
-        {HttpHeaderId::CONTENT_TYPE, "text/plain"},
+        {HttpHeaderId::HOST(), "example.com"},
+        {HttpHeaderId::CONTENT_TYPE(), "text/plain"},
       },
       9, { "foo", "bar", "baz" },
     },
@@ -710,8 +710,8 @@ kj::ArrayPtr<const HttpRequestTestCase> requestTestCases() {
       HttpMethod::POST,
       "/",
       {
-        {HttpHeaderId::HOST, "example.com"},
-        {HttpHeaderId::CONTENT_TYPE, "text/plain"},
+        {HttpHeaderId::HOST(), "example.com"},
+        {HttpHeaderId::CONTENT_TYPE(), "text/plain"},
       },
       nullptr, { "foo", "barbaz" },
     },
@@ -730,8 +730,8 @@ kj::ArrayPtr<const HttpRequestTestCase> requestTestCases() {
       HttpMethod::POST,
       "/",
       {
-        {HttpHeaderId::HOST, "example.com"},
-        {HttpHeaderId::CONTENT_TYPE, "text/plain"},
+        {HttpHeaderId::HOST(), "example.com"},
+        {HttpHeaderId::CONTENT_TYPE(), "text/plain"},
       },
       nullptr, { "0123456789abcdef0123456789abc" },
     },
@@ -741,7 +741,7 @@ kj::ArrayPtr<const HttpRequestTestCase> requestTestCases() {
 
       HttpMethod::GET,
       "/",
-      {{HttpHeaderId::HOST, HUGE_STRING}},
+      {{HttpHeaderId::HOST(), HUGE_STRING}},
       uint64_t(0), {}
     },
 
@@ -754,7 +754,7 @@ kj::ArrayPtr<const HttpRequestTestCase> requestTestCases() {
 
       HttpMethod::GET,
       "/foo/bar",
-      {{HttpHeaderId::HOST, "example.com"}},
+      {{HttpHeaderId::HOST(), "example.com"}},
       uint64_t(6), { "foobar" },
     },
 
@@ -772,8 +772,8 @@ kj::ArrayPtr<const HttpRequestTestCase> requestTestCases() {
 
       HttpMethod::GET,
       "/foo/bar",
-      {{HttpHeaderId::HOST, "example.com"},
-       {HttpHeaderId::TRANSFER_ENCODING, "chunked"}},
+      {{HttpHeaderId::HOST(), "example.com"},
+       {HttpHeaderId::TRANSFER_ENCODING(), "chunked"}},
       nullptr, { "foo", "bar" },
     }
   };
@@ -793,7 +793,7 @@ kj::ArrayPtr<const HttpResponseTestCase> responseTestCases() {
       "baz qux",
 
       200, "OK",
-      {{HttpHeaderId::CONTENT_TYPE, "text/plain"}},
+      {{HttpHeaderId::CONTENT_TYPE(), "text/plain"}},
       nullptr, {"baz qux"},
 
       HttpMethod::GET,
@@ -807,7 +807,7 @@ kj::ArrayPtr<const HttpResponseTestCase> responseTestCases() {
       "\r\n",
 
       200, "OK",
-      {{HttpHeaderId::CONTENT_TYPE, "text/plain"}},
+      {{HttpHeaderId::CONTENT_TYPE(), "text/plain"}},
       123, {},
 
       HttpMethod::HEAD,
@@ -820,8 +820,8 @@ kj::ArrayPtr<const HttpResponseTestCase> responseTestCases() {
       "\r\n",
 
       200, "OK",
-      {{HttpHeaderId::CONTENT_TYPE, "text/plain"},
-       {HttpHeaderId::CONTENT_LENGTH, "foobar"}},
+      {{HttpHeaderId::CONTENT_TYPE(), "text/plain"},
+       {HttpHeaderId::CONTENT_LENGTH(), "foobar"}},
       123, {},
 
       HttpMethod::HEAD,
@@ -847,7 +847,7 @@ kj::ArrayPtr<const HttpResponseTestCase> responseTestCases() {
       "quxcorge",
 
       200, "OK",
-      {{HttpHeaderId::CONTENT_TYPE, "text/plain"}},
+      {{HttpHeaderId::CONTENT_TYPE(), "text/plain"}},
       8, { "qux", "corge" }
     },
 
@@ -864,7 +864,7 @@ kj::ArrayPtr<const HttpResponseTestCase> responseTestCases() {
       "\r\n",
 
       200, "OK",
-      {{HttpHeaderId::CONTENT_TYPE, "text/plain"}},
+      {{HttpHeaderId::CONTENT_TYPE(), "text/plain"}},
       nullptr, { "qux", "corge" }
     },
   };
@@ -1511,20 +1511,20 @@ KJ_TEST("HttpInputStream bare messages") {
   {
     KJ_ASSERT(input->awaitNextMessage().wait(waitScope));
     auto message = input->readMessage().wait(waitScope);
-    KJ_EXPECT(KJ_ASSERT_NONNULL(message.headers.get(HttpHeaderId::CONTENT_LENGTH)) == "6");
+    KJ_EXPECT(KJ_ASSERT_NONNULL(message.headers.get(HttpHeaderId::CONTENT_LENGTH())) == "6");
     KJ_EXPECT(message.body->readAllText().wait(waitScope) == "foobar");
   }
   {
     KJ_ASSERT(input->awaitNextMessage().wait(waitScope));
     auto message = input->readMessage().wait(waitScope);
-    KJ_EXPECT(KJ_ASSERT_NONNULL(message.headers.get(HttpHeaderId::CONTENT_LENGTH)) == "11");
-    KJ_EXPECT(KJ_ASSERT_NONNULL(message.headers.get(HttpHeaderId::CONTENT_TYPE)) == "some/type");
+    KJ_EXPECT(KJ_ASSERT_NONNULL(message.headers.get(HttpHeaderId::CONTENT_LENGTH())) == "11");
+    KJ_EXPECT(KJ_ASSERT_NONNULL(message.headers.get(HttpHeaderId::CONTENT_TYPE())) == "some/type");
     KJ_EXPECT(message.body->readAllText().wait(waitScope) == "bazquxcorge");
   }
   {
     KJ_ASSERT(input->awaitNextMessage().wait(waitScope));
     auto message = input->readMessage().wait(waitScope);
-    KJ_EXPECT(KJ_ASSERT_NONNULL(message.headers.get(HttpHeaderId::TRANSFER_ENCODING)) == "chunked");
+    KJ_EXPECT(KJ_ASSERT_NONNULL(message.headers.get(HttpHeaderId::TRANSFER_ENCODING())) == "chunked");
     KJ_EXPECT(message.body->readAllText().wait(waitScope) == "graultgarplywaldo");
   }
 
@@ -2871,7 +2871,7 @@ public:
         return KJ_EXCEPTION(FAILED, "client requested failure");
       }
 
-      auto body = kj::str(headers.get(HttpHeaderId::HOST).orDefault("null"), ":", url);
+      auto body = kj::str(headers.get(HttpHeaderId::HOST()).orDefault("null"), ":", url);
       auto stream = response.send(200, "OK", HttpHeaders(headerTable), body.size());
       auto promises = kj::heapArrayBuilder<kj::Promise<void>>(2);
       promises.add(stream->write(body.begin(), body.size()));
@@ -2879,7 +2879,7 @@ public:
       return kj::joinPromises(promises.finish()).attach(kj::mv(stream), kj::mv(body));
     } else {
       auto ws = response.acceptWebSocket(HttpHeaders(headerTable));
-      auto body = kj::str(headers.get(HttpHeaderId::HOST).orDefault("null"), ":", url);
+      auto body = kj::str(headers.get(HttpHeaderId::HOST()).orDefault("null"), ":", url);
       auto sendPromise = ws->send(body);
 
       auto promises = kj::heapArrayBuilder<kj::Promise<void>>(2);
@@ -3377,11 +3377,11 @@ KJ_TEST("HttpClient to capnproto.org") {
     auto client = newHttpClient(table, **conn);
 
     HttpHeaders headers(table);
-    headers.set(HttpHeaderId::HOST, "capnproto.org");
+    headers.set(HttpHeaderId::HOST(), "capnproto.org");
 
     auto response = client->request(HttpMethod::GET, "/", headers).response.wait(io.waitScope);
     KJ_EXPECT(response.statusCode / 100 == 3);
-    auto location = KJ_ASSERT_NONNULL(response.headers->get(HttpHeaderId::LOCATION));
+    auto location = KJ_ASSERT_NONNULL(response.headers->get(HttpHeaderId::LOCATION()));
     KJ_EXPECT(location == "https://capnproto.org/");
 
     auto body = response.body->readAllText().wait(io.waitScope);

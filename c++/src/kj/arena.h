@@ -119,7 +119,7 @@ private:
   static void destroyArray(void* pointer) {
     size_t elementCount = *reinterpret_cast<size_t*>(pointer);
     constexpr size_t prefixSize = kj::max(alignof(T), sizeof(size_t));
-    DestructorOnlyArrayDisposer::instance.disposeImpl(
+    DestructorOnlyArrayDisposer::instance().disposeImpl(
         reinterpret_cast<byte*>(pointer) + prefixSize,
         sizeof(T), elementCount, elementCount, &destroyObject<T>);
   }
@@ -204,7 +204,7 @@ template <typename T>
 ArrayBuilder<T> Arena::allocateOwnArrayBuilder(size_t capacity) {
   return ArrayBuilder<T>(
       reinterpret_cast<T*>(allocateBytes(sizeof(T) * capacity, alignof(T), false)),
-      capacity, DestructorOnlyArrayDisposer::instance);
+      capacity, DestructorOnlyArrayDisposer::instance());
 }
 
 }  // namespace kj

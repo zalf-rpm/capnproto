@@ -485,7 +485,8 @@ static const char* BUILTIN_HEADER_NAMES[] = {
 #undef HEADER_ID
 
 #define DEFINE_HEADER(id, name) \
-const HttpHeaderId HttpHeaderId::id(nullptr, HttpHeaders::BuiltinIndices::id);
+const HttpHeaderId& HttpHeaderId::id(){ static const HttpHeaderId hhi(nullptr, HttpHeaders::BuiltinIndices::id); return hhi; }
+//const HttpHeaderId HttpHeaderId::id(nullptr, HttpHeaders::BuiltinIndices::id);
 KJ_HTTP_FOR_EACH_BUILTIN_HEADER(DEFINE_HEADER)
 #undef DEFINE_HEADER
 
@@ -630,7 +631,7 @@ constexpr bool fastCaseCmp(const char* actual);
 
 bool HttpHeaders::isWebSocket() const {
   return fastCaseCmp<'w', 'e', 'b', 's', 'o', 'c', 'k', 'e', 't'>(
-      get(HttpHeaderId::UPGRADE).orDefault(nullptr).cStr());
+      get(HttpHeaderId::UPGRADE()).orDefault(nullptr).cStr());
 }
 
 void HttpHeaders::set(HttpHeaderId id, kj::StringPtr value) {
@@ -1602,9 +1603,9 @@ kj::Own<kj::AsyncInputStream> HttpInputStreamImpl::getEntityBody(
     if (method == HttpMethod::HEAD) {
       // Body elided.
       kj::Maybe<uint64_t> length;
-      KJ_IF_MAYBE(cl, headers.get(HttpHeaderId::CONTENT_LENGTH)) {
+      KJ_IF_MAYBE(cl, headers.get(HttpHeaderId::CONTENT_LENGTH())) {
         length = strtoull(cl->cStr(), nullptr, 10);
-      } else if (headers.get(HttpHeaderId::TRANSFER_ENCODING) == nullptr) {
+      } else if (headers.get(HttpHeaderId::TRANSFER_ENCODING()) == nullptr) {
         // HACK: Neither Content-Length nor Transfer-Encoding header in response to HEAD request.
         //   Propagate this fact with a 0 expected body length.
         length = uint64_t(0);
@@ -1616,7 +1617,7 @@ kj::Own<kj::AsyncInputStream> HttpInputStreamImpl::getEntityBody(
     }
   }
 
-  KJ_IF_MAYBE(te, headers.get(HttpHeaderId::TRANSFER_ENCODING)) {
+  KJ_IF_MAYBE(te, headers.get(HttpHeaderId::TRANSFER_ENCODING())) {
     // TODO(someday): Support plugable transfer encodings? Or at least gzip?
     // TODO(someday): Support stacked transfer encodings, e.g. "gzip, chunked".
     if (fastCaseCmp<'c','h','u','n','k','e','d'>(te->cStr())) {
@@ -1626,7 +1627,7 @@ kj::Own<kj::AsyncInputStream> HttpInputStreamImpl::getEntityBody(
     }
   }
 
-  KJ_IF_MAYBE(cl, headers.get(HttpHeaderId::CONTENT_LENGTH)) {
+  KJ_IF_MAYBE(cl, headers.get(HttpHeaderId::CONTENT_LENGTH())) {
     return kj::heap<HttpFixedLengthEntityReader>(*this, strtoull(cl->cStr(), nullptr, 10));
   }
 
@@ -1635,7 +1636,7 @@ kj::Own<kj::AsyncInputStream> HttpInputStreamImpl::getEntityBody(
     return kj::heap<HttpNullEntityReader>(*this, uint64_t(0));
   }
 
-  KJ_IF_MAYBE(c, headers.get(HttpHeaderId::CONNECTION)) {
+  KJ_IF_MAYBE(c, headers.get(HttpHeaderId::CONNECTION())) {
     // TODO(someday): Connection header can actually have multiple tokens... but no one ever uses
     //   that feature?
     if (fastCaseCmp<'c','l','o','s','e'>(c->cStr())) {
@@ -3164,7 +3165,7 @@ public:
         hasBody = true;
       }
     } else {
-      if (isGet && headers.get(HttpHeaderId::TRANSFER_ENCODING) == nullptr) {
+      if (isGet && headers.get(HttpHeaderId::TRANSFER_ENCODING()) == nullptr) {
         // GET with empty body; don't send any Transfer-Encoding.
         hasBody = false;
       } else {
@@ -3205,7 +3206,7 @@ public:
         };
 
         if (fastCaseCmp<'c', 'l', 'o', 's', 'e'>(
-            headers.get(HttpHeaderId::CONNECTION).orDefault(nullptr).cStr())) {
+            headers.get(HttpHeaderId::CONNECTION()).orDefault(nullptr).cStr())) {
           closed = true;
         } else if (counter == id) {
           watchForClose();
@@ -3264,19 +3265,19 @@ public:
         auto& headers = httpInput.getHeaders();
         if (r->statusCode == 101) {
           if (!fastCaseCmp<'w', 'e', 'b', 's', 'o', 'c', 'k', 'e', 't'>(
-                  headers.get(HttpHeaderId::UPGRADE).orDefault(nullptr).cStr())) {
+                  headers.get(HttpHeaderId::UPGRADE()).orDefault(nullptr).cStr())) {
             KJ_FAIL_REQUIRE("server returned incorrect Upgrade header; should be 'websocket'",
-                            headers.get(HttpHeaderId::UPGRADE).orDefault("(null)")) {
+                            headers.get(HttpHeaderId::UPGRADE()).orDefault("(null)")) {
               break;
             }
             return HttpClient::WebSocketResponse();
           }
 
           auto expectedAccept = generateWebSocketAccept(keyBase64);
-          if (headers.get(HttpHeaderId::SEC_WEBSOCKET_ACCEPT).orDefault(nullptr)
+          if (headers.get(HttpHeaderId::SEC_WEBSOCKET_ACCEPT()).orDefault(nullptr)
                 != expectedAccept) {
             KJ_FAIL_REQUIRE("server returned incorrect Sec-WebSocket-Accept header",
-                headers.get(HttpHeaderId::SEC_WEBSOCKET_ACCEPT).orDefault("(null)"),
+                headers.get(HttpHeaderId::SEC_WEBSOCKET_ACCEPT()).orDefault("(null)"),
                 expectedAccept) { break; }
             return HttpClient::WebSocketResponse();
           }
@@ -3297,7 +3298,7 @@ public:
                                     headers)
           };
           if (fastCaseCmp<'c', 'l', 'o', 's', 'e'>(
-              headers.get(HttpHeaderId::CONNECTION).orDefault(nullptr).cStr())) {
+              headers.get(HttpHeaderId::CONNECTION()).orDefault(nullptr).cStr())) {
             closed = true;
           } else if (counter == id) {
             watchForClose();
@@ -3373,7 +3374,7 @@ kj::Own<HttpClient> newHttpClient(
     HttpHeaderTable& responseHeaderTable, kj::AsyncIoStream& stream,
     HttpClientSettings settings) {
   return kj::heap<HttpClientImpl>(responseHeaderTable,
-      kj::Own<kj::AsyncIoStream>(&stream, kj::NullDisposer::instance),
+      kj::Own<kj::AsyncIoStream>(&stream, kj::NullDisposer::instance()),
       kj::mv(settings));
 }
 
@@ -3824,7 +3825,7 @@ public:
     auto parsed = Url::parse(url, Url::HTTP_PROXY_REQUEST, urlOptions);
     auto path = parsed.toString(Url::HTTP_REQUEST);
     auto headersCopy = headers.clone();
-    headersCopy.set(HttpHeaderId::HOST, parsed.host);
+    headersCopy.set(HttpHeaderId::HOST(), parsed.host);
     return getClient(parsed).request(method, path, headersCopy, expectedBodySize);
   }
 
@@ -3839,7 +3840,7 @@ public:
     auto parsed = Url::parse(url, Url::HTTP_PROXY_REQUEST, urlOptions);
     auto path = parsed.toString(Url::HTTP_REQUEST);
     auto headersCopy = headers.clone();
-    headersCopy.set(HttpHeaderId::HOST, parsed.host);
+    headersCopy.set(HttpHeaderId::HOST(), parsed.host);
     return getClient(parsed).openWebSocket(path, headersCopy);
   }
 
@@ -3938,7 +3939,7 @@ private:
 kj::Own<HttpClient> newHttpClient(kj::Timer& timer, HttpHeaderTable& responseHeaderTable,
                                   kj::NetworkAddress& addr, HttpClientSettings settings) {
   return kj::heap<NetworkAddressHttpClient>(timer, responseHeaderTable,
-      kj::Own<kj::NetworkAddress>(&addr, kj::NullDisposer::instance), kj::mv(settings));
+      kj::Own<kj::NetworkAddress>(&addr, kj::NullDisposer::instance()), kj::mv(settings));
 }
 
 kj::Own<HttpClient> newHttpClient(kj::Timer& timer, HttpHeaderTable& responseHeaderTable,
@@ -4195,7 +4196,7 @@ public:
     // `Upgrade: websocket` so that headers.isWebSocket() returns true on the service side.
     auto urlCopy = kj::str(url);
     auto headersCopy = kj::heap(headers.clone());
-    headersCopy->set(HttpHeaderId::UPGRADE, "websocket");
+    headersCopy->set(HttpHeaderId::UPGRADE(), "websocket");
     KJ_DASSERT(headersCopy->isWebSocket());
 
     auto paf = kj::newPromiseAndFulfiller<WebSocketResponse>();
@@ -4896,8 +4897,8 @@ private:
     // header, use that instead of whatever we decided above.
     kj::ArrayPtr<kj::StringPtr> connectionHeadersArray = connectionHeaders;
     if (method == HttpMethod::HEAD) {
-      if (headers.get(HttpHeaderId::CONTENT_LENGTH) != nullptr ||
-          headers.get(HttpHeaderId::TRANSFER_ENCODING) != nullptr) {
+      if (headers.get(HttpHeaderId::CONTENT_LENGTH()) != nullptr ||
+          headers.get(HttpHeaderId::TRANSFER_ENCODING()) != nullptr) {
         connectionHeadersArray = connectionHeadersArray
             .slice(0, HttpHeaders::HEAD_RESPONSE_CONNECTION_HEADERS_COUNT);
       }
@@ -4935,13 +4936,13 @@ private:
           "ERROR: WebSocket must be initiated with a GET request."));
     }
 
-    if (requestHeaders.get(HttpHeaderId::SEC_WEBSOCKET_VERSION).orDefault(nullptr) != "13") {
+    if (requestHeaders.get(HttpHeaderId::SEC_WEBSOCKET_VERSION()).orDefault(nullptr) != "13") {
       return sendWebSocketError(400, "Bad Request", kj::str(
           "ERROR: The requested WebSocket version is not supported."));
     }
 
     kj::String key;
-    KJ_IF_MAYBE(k, requestHeaders.get(HttpHeaderId::SEC_WEBSOCKET_KEY)) {
+    KJ_IF_MAYBE(k, requestHeaders.get(HttpHeaderId::SEC_WEBSOCKET_KEY())) {
       currentMethod = HttpMethod::GET;
       key = kj::str(*k);
     } else {
@@ -4964,17 +4965,17 @@ private:
     // from the request handler. For some extra safety, we check that webSocketClosed has been
     // set true when the handler returns.
     auto deferNoteClosed = kj::defer([this]() { webSocketClosed = true; });
-    kj::Own<kj::AsyncIoStream> ownStream(&stream, kj::NullDisposer::instance);
+    kj::Own<kj::AsyncIoStream> ownStream(&stream, kj::NullDisposer::instance());
     return upgradeToWebSocket(ownStream.attach(kj::mv(deferNoteClosed)),
                               httpInput, httpOutput, nullptr);
   }
 
   kj::Promise<bool> sendError(uint statusCode, kj::StringPtr statusText, kj::String body) {
     HttpHeaders failed(server.requestHeaderTable);
-    failed.set(HttpHeaderId::CONNECTION, "close");
-    failed.set(HttpHeaderId::CONTENT_LENGTH, kj::str(body.size()));
+    failed.set(HttpHeaderId::CONNECTION(), "close");
+    failed.set(HttpHeaderId::CONTENT_LENGTH(), kj::str(body.size()));
 
-    failed.set(HttpHeaderId::CONTENT_TYPE, "text/plain");
+    failed.set(HttpHeaderId::CONTENT_TYPE(), "text/plain");
 
     httpOutput.writeHeaders(failed.serializeResponse(statusCode, statusText));
     httpOutput.writeBodyData(kj::mv(body));

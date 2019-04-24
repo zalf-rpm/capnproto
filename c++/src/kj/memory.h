@@ -135,7 +135,11 @@ class NullDisposer: public Disposer {
   // A disposer that does nothing.
 
 public:
-  static const NullDisposer instance;
+	static const NullDisposer& instance()	{
+		static const NullDisposer nd;
+		return nd;
+	}
+  //static const NullDisposer instance;
 
   void disposeImpl(void* pointer) const override {}
 };

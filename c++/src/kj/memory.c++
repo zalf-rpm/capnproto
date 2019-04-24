@@ -23,6 +23,6 @@
 
 namespace kj {
 
-const NullDisposer NullDisposer::instance = NullDisposer();
+//const NullDisposer NullDisposer::instance = NullDisposer();
 
 }  // namespace kj

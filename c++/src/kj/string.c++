@@ -124,7 +124,7 @@ template <> float StringPtr::parseAs<float>() const { return parseDouble(*this);
 String heapString(size_t size) {
   char* buffer = _::HeapArrayDisposer::allocate<char>(size + 1);
   buffer[size] = '\0';
-  return String(buffer, size, _::HeapArrayDisposer::instance);
+  return String(buffer, size, _::HeapArrayDisposer::instance());
 }
 
 String heapString(const char* value, size_t size) {
@@ -133,7 +133,7 @@ String heapString(const char* value, size_t size) {
     memcpy(buffer, value, size);
   }
   buffer[size] = '\0';
-  return String(buffer, size, _::HeapArrayDisposer::instance);
+  return String(buffer, size, _::HeapArrayDisposer::instance());
 }
 
 template <typename T>
