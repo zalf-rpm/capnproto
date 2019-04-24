@@ -90,7 +90,7 @@ struct Message {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(91b79f1f808db032, 1, 1)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -105,7 +105,7 @@ struct Bootstrap {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(e94ccf8031176ec4, 1, 1)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -121,7 +121,7 @@ struct Call {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(836a53ce789d4cd4, 3, 3)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -141,7 +141,7 @@ struct Call::SendResultsTo {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(dae8b0f61aab5f99, 3, 3)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -164,7 +164,7 @@ struct Return {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(9e19b28d3db3573a, 2, 1)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -179,7 +179,7 @@ struct Finish {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(d37d2eb2c2f80e63, 1, 0)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -198,7 +198,7 @@ struct Resolve {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(bbc29655fa89086e, 1, 1)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -213,7 +213,7 @@ struct Release {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(ad1a6c0d7dd07497, 1, 0)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -229,7 +229,7 @@ struct Disembargo {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(f964368b0fbd3711, 1, 1)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -250,7 +250,7 @@ struct Disembargo::Context {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(d562b4df655bdd4d, 1, 1)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -265,7 +265,7 @@ struct Provide {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(9c6a046bfbc1ac5a, 1, 2)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -280,7 +280,7 @@ struct Accept {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(d4c9b56290554016, 1, 1)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -295,7 +295,7 @@ struct Join {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(fbe1980490e001af, 1, 2)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -314,7 +314,7 @@ struct MessageTarget {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(95bc14545813fbc1, 1, 1)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -329,7 +329,7 @@ struct Payload {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(9a0e61223d96743b, 0, 2)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -352,7 +352,7 @@ struct CapDescriptor {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(8523ddc40b86b8b0, 1, 1)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -368,7 +368,7 @@ struct PromisedAnswer {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(d800b1d6cd6f1ca0, 1, 1)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -387,7 +387,7 @@ struct PromisedAnswer::Op {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(f316944415569081, 1, 0)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -402,7 +402,7 @@ struct ThirdPartyCapDescriptor {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(d37007fde1f0027d, 1, 1)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -419,7 +419,7 @@ struct Exception {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(d625b7063acf691a, 1, 1)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };

@@ -1862,7 +1862,7 @@ private:
       //   getDisplayName().
       auto& result = disk->getCurrent();
       if (isSourcePrefix) {
-        kj::Own<const kj::ReadableDirectory> fakeOwn(&result, kj::NullDisposer::instance);
+        kj::Own<const kj::ReadableDirectory> fakeOwn(&result, kj::NullDisposer::instance());
         sourceDirectories.insert(kj::mv(path), { kj::mv(fakeOwn), isSourcePrefix });
       }
       return result;

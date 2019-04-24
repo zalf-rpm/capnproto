@@ -68,7 +68,7 @@ struct Value {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(a3fa7845f919dd83, 2, 1)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -83,7 +83,7 @@ struct Value::Field {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(e31026e735d69ddf, 0, 2)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -98,7 +98,7 @@ struct Value::Call {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(a0d9f6eca1c93d48, 0, 2)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -113,7 +113,7 @@ struct FlattenOptions {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(c4df13257bc2ea61, 0, 1)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
@@ -128,7 +128,7 @@ struct DiscriminatorOptions {
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(c2f8c20c293e5319, 0, 2)
     #if !CAPNP_LITE
-    static ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    static ::capnp::_::RawBrandedSchema const* brand() { return &schema()->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };

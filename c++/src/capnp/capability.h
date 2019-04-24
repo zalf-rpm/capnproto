@@ -551,7 +551,7 @@ public:
   // discover when a capability it needs to marshal is one that it created in the first place, and
   // therefore it can transfer the capability without proxying.
 
-  static const uint NULL_CAPABILITY_BRAND;
+  CAPNP_API static const uint NULL_CAPABILITY_BRAND;
   // Value is irrelevant; used for pointer.
 
   inline bool isNull() { return getBrand() == &NULL_CAPABILITY_BRAND; }
