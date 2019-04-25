@@ -142,7 +142,7 @@ private:
   friend class ResponseHook;
 };
 
-class Capability::Client {
+class CAPNP_RPC_API Capability::Client {
   // Base type for capability clients.
 
 public:
@@ -317,7 +317,7 @@ private:
   friend struct DynamicCapability;
 };
 
-class Capability::Server {
+class CAPNP_RPC_API Capability::Server {
   // Objects implementing a Cap'n Proto interface must subclass this.  Typically, such objects
   // will instead subclass a typed Server interface which will take care of implementing
   // dispatchCall().
@@ -363,7 +363,7 @@ private:
 
 // =======================================================================================
 
-class ReaderCapabilityTable: private _::CapTableReader {
+class CAPNP_RPC_API ReaderCapabilityTable: private _::CapTableReader {
   // Class which imbues Readers with the ability to read capabilities.
   //
   // In Cap'n Proto format, the encoding of a capability pointer is simply an integer index into
@@ -392,7 +392,7 @@ private:
   kj::Maybe<kj::Own<ClientHook>> extractCap(uint index) override;
 };
 
-class BuilderCapabilityTable: private _::CapTableBuilder {
+class CAPNP_RPC_API BuilderCapabilityTable: private _::CapTableBuilder {
   // Class which imbues Builders with the ability to read and write capabilities.
   //
   // This is much like ReaderCapabilityTable, except for builders. The table starts out empty,
@@ -421,7 +421,7 @@ private:
 
 namespace _ {  // private
 
-class CapabilityServerSetBase {
+class CAPNP_RPC_API CapabilityServerSetBase {
 public:
   Capability::Client addInternal(kj::Own<Capability::Server>&& server, void* ptr);
   kj::Promise<void*> getLocalServerInternal(Capability::Client& client);
@@ -462,7 +462,7 @@ public:
 // Hook interfaces which must be implemented by the RPC system.  Applications never call these
 // directly; the RPC system implements them and the types defined earlier in this file wrap them.
 
-class RequestHook {
+class CAPNP_RPC_API RequestHook {
   // Hook interface implemented by RPC system representing a request being built.
 
 public:
@@ -480,7 +480,7 @@ public:
   }
 };
 
-class ResponseHook {
+class CAPNP_RPC_API ResponseHook {
   // Hook interface implemented by RPC system representing a response.
   //
   // At present this class has no methods.  It exists only for garbage collection -- when the
@@ -497,8 +497,10 @@ public:
 };
 
 // class PipelineHook is declared in any.h because it is needed there.
+CAPNP_API extern const uint NULL_CAPABILITY_BRAND;
+// Value is irrelevant; used for pointer.
 
-class ClientHook {
+class CAPNP_RPC_API ClientHook {
 public:
   ClientHook();
 
@@ -551,7 +553,7 @@ public:
   // discover when a capability it needs to marshal is one that it created in the first place, and
   // therefore it can transfer the capability without proxying.
 
-  CAPNP_API static const uint NULL_CAPABILITY_BRAND;
+	//static const uint NULL_CAPABILITY_BRAND;
   // Value is irrelevant; used for pointer.
 
   inline bool isNull() { return getBrand() == &NULL_CAPABILITY_BRAND; }
@@ -566,7 +568,7 @@ public:
   static kj::Own<ClientHook> from(Capability::Client client) { return kj::mv(client.hook); }
 };
 
-class CallContextHook {
+class CAPNP_RPC_API CallContextHook {
   // Hook interface implemented by RPC system to manage a call on the server side.  See
   // CallContext<T>.
 

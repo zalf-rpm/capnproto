@@ -34,7 +34,7 @@ namespace capnp {
 class ParsedSchema;
 class SchemaFile;
 
-class SchemaParser {
+class CAPNP_C_API SchemaParser {
   // Parses `.capnp` files to produce `Schema` objects.
   //
   // This class is thread-safe, hence all its methods are const.
@@ -156,7 +156,7 @@ private:
   friend class ParsedSchema;
 };
 
-class ParsedSchema: public Schema {
+class CAPNP_C_API ParsedSchema: public Schema {
   // ParsedSchema is an extension of Schema which also has the ability to look up nested nodes
   // by name.  See `SchemaParser`.
 
@@ -184,7 +184,7 @@ private:
 // =======================================================================================
 // Advanced API
 
-class SchemaFile {
+class CAPNP_C_API SchemaFile {
   // Abstract interface representing a schema file.  You can implement this yourself in order to
   // gain more control over how the compiler resolves imports and reads files.  For the
   // common case of files on disk or other global filesystem-like namespaces, use

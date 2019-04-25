@@ -56,16 +56,16 @@ using SchemaType = typename SchemaType_<T>::Type;
 // SchemaType<T> is the type of T's schema, e.g. StructSchema if T is a struct.
 
 namespace _ {  // private
-CAPNP_API extern const RawSchema NULL_SCHEMA;
-CAPNP_API extern const RawSchema NULL_STRUCT_SCHEMA;
-CAPNP_API extern const RawSchema NULL_ENUM_SCHEMA;
-CAPNP_API extern const RawSchema NULL_INTERFACE_SCHEMA;
-CAPNP_API extern const RawSchema NULL_CONST_SCHEMA;
+extern const RawSchema NULL_SCHEMA;
+extern const RawSchema NULL_STRUCT_SCHEMA;
+extern const RawSchema NULL_ENUM_SCHEMA;
+extern const RawSchema NULL_INTERFACE_SCHEMA;
+extern const RawSchema NULL_CONST_SCHEMA;
 // The schema types default to these null (empty) schemas in case of error, especially when
 // exceptions are disabled.
 }  // namespace _ (private)
 
-class Schema {
+class CAPNP_API Schema {
   // Convenience wrapper around capnp::schema::Node.
 
 public:
@@ -187,7 +187,7 @@ private:
 
 kj::StringPtr KJ_STRINGIFY(const Schema& schema);
 
-class Schema::BrandArgumentList {
+class CAPNP_API Schema::BrandArgumentList {
   // A list of generic parameter bindings for parameters of some particular type. Note that since
   // parameters on an outer type apply to all inner types as well, a deeply-nested type can have
   // multiple BrandArgumentLists that apply to it.
@@ -224,7 +224,7 @@ private:
 
 // -------------------------------------------------------------------
 
-class StructSchema: public Schema {
+class CAPNP_API StructSchema: public Schema {
 public:
   inline StructSchema(): Schema(&_::NULL_STRUCT_SCHEMA.defaultBrand) {}
 
@@ -269,7 +269,7 @@ private:
   friend class Type;
 };
 
-class StructSchema::Field {
+class CAPNP_API StructSchema::Field {
 public:
   Field() = default;
 
@@ -320,7 +320,7 @@ private:
 
 kj::StringPtr KJ_STRINGIFY(const StructSchema::Field& field);
 
-class StructSchema::FieldList {
+class CAPNP_API StructSchema::FieldList {
 public:
   FieldList() = default;  // empty list
 
@@ -341,7 +341,7 @@ private:
   friend class StructSchema;
 };
 
-class StructSchema::FieldSubset {
+class CAPNP_API StructSchema::FieldSubset {
 public:
   FieldSubset() = default;  // empty list
 
@@ -369,7 +369,7 @@ private:
 
 // -------------------------------------------------------------------
 
-class EnumSchema: public Schema {
+class CAPNP_API EnumSchema: public Schema {
 public:
   inline EnumSchema(): Schema(&_::NULL_ENUM_SCHEMA.defaultBrand) {}
 
@@ -392,7 +392,7 @@ private:
   friend class Type;
 };
 
-class EnumSchema::Enumerant {
+class CAPNP_API EnumSchema::Enumerant {
 public:
   Enumerant() = default;
 
@@ -417,7 +417,7 @@ private:
   friend class EnumSchema;
 };
 
-class EnumSchema::EnumerantList {
+class CAPNP_API EnumSchema::EnumerantList {
 public:
   EnumerantList() = default;  // empty list
 
@@ -440,7 +440,7 @@ private:
 
 // -------------------------------------------------------------------
 
-class InterfaceSchema: public Schema {
+class CAPNP_API InterfaceSchema: public Schema {
 public:
   inline InterfaceSchema(): Schema(&_::NULL_INTERFACE_SCHEMA.defaultBrand) {}
 
@@ -481,7 +481,7 @@ private:
   // search when the counter reaches a threshold.
 };
 
-class InterfaceSchema::Method {
+class CAPNP_API InterfaceSchema::Method {
 public:
   Method() = default;
 
@@ -511,7 +511,7 @@ private:
   friend class InterfaceSchema;
 };
 
-class InterfaceSchema::MethodList {
+class CAPNP_API InterfaceSchema::MethodList {
 public:
   MethodList() = default;  // empty list
 
@@ -532,7 +532,7 @@ private:
   friend class InterfaceSchema;
 };
 
-class InterfaceSchema::SuperclassList {
+class CAPNP_API InterfaceSchema::SuperclassList {
 public:
   SuperclassList() = default;  // empty list
 
@@ -555,7 +555,7 @@ private:
 
 // -------------------------------------------------------------------
 
-class ConstSchema: public Schema {
+class CAPNP_API ConstSchema: public Schema {
   // Represents a constant declaration.
   //
   // `ConstSchema` can be implicitly cast to DynamicValue to read its value.
@@ -583,7 +583,7 @@ private:
 
 // -------------------------------------------------------------------
 
-class Type {
+class CAPNP_API Type {
 public:
   struct BrandParameter {
     uint64_t scopeId;
@@ -696,7 +696,7 @@ private:
 
 // -------------------------------------------------------------------
 
-class ListSchema {
+class CAPNP_API ListSchema {
   // ListSchema is a little different because list types are not described by schema nodes.  So,
   // ListSchema doesn't subclass Schema.
 

@@ -32,7 +32,7 @@ typedef json::Value JsonValue;
 //
 // TODO(cleanup): Consider replacing all uses of JsonValue with json::Value?
 
-class JsonCodec {
+class CAPNP_JSON_API JsonCodec {
   // Flexible class for encoding Cap'n Proto types as JSON, and decoding JSON back to Cap'n Proto.
   //
   // Typical usage:
@@ -339,7 +339,7 @@ inline DynamicEnum JsonCodec::decode(JsonValue::Reader input, EnumSchema type) c
 
 // -----------------------------------------------------------------------------
 
-class JsonCodec::HandlerBase {
+class CAPNP_JSON_API JsonCodec::HandlerBase {
   // Internal helper; ignore.
 public:
   virtual void encodeBase(const JsonCodec& codec, DynamicValue::Reader input,
@@ -402,7 +402,7 @@ private:
 };
 
 template <>
-class JsonCodec::Handler<DynamicStruct>: private JsonCodec::HandlerBase {
+class CAPNP_JSON_API JsonCodec::Handler<DynamicStruct>: private JsonCodec::HandlerBase {
   // Almost identical to Style::STRUCT except that we pass the struct type to decode().
 
 public:

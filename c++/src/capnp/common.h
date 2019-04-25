@@ -143,7 +143,7 @@ inline kj::StringPtr KJ_STRINGIFY(Void) { return "void"; }
 struct Text;
 struct Data;
 
-enum class Kind: uint8_t {
+enum class CAPNP_API Kind: uint8_t {
   PRIMITIVE,
   BLOB,
   ENUM,
@@ -157,14 +157,14 @@ enum class Kind: uint8_t {
   // special handling. This includes types like AnyPointer, Dynamic*, etc.
 };
 
-enum class Style: uint8_t {
+enum class CAPNP_API Style: uint8_t {
   PRIMITIVE,
   POINTER,      // other than struct
   STRUCT,
   CAPABILITY
 };
 
-enum class ElementSize: uint8_t {
+enum class CAPNP_API ElementSize: uint8_t {
   // Size of a list element.
 
   VOID = 0,
@@ -179,7 +179,7 @@ enum class ElementSize: uint8_t {
   INLINE_COMPOSITE = 7
 };
 
-enum class PointerType {
+enum class CAPNP_API PointerType {
   // Various wire types a pointer field can take
 
   NULL_,
@@ -404,7 +404,7 @@ struct MessageSize {
 
 using kj::byte;
 
-class word {
+class CAPNP_API word {
   // word is an opaque type with size of 64 bits.  This type is useful only to make pointer
   // arithmetic clearer.  Since the contents are private, the only way to access them is to first
   // reinterpret_cast to some other pointer type.
