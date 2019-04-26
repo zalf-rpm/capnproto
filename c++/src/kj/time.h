@@ -59,7 +59,7 @@ using Date = Absolute<Duration, _::DateLabel>;
 constexpr Date UNIX_EPOCH = origin<Date>();
 // The `Date` representing Jan 1, 1970 00:00:00 UTC.
 
-class Clock {
+class KJ_ASYNC_API Clock {
   // Interface to read the current date and time.
 public:
   virtual Date now() const = 0;

@@ -31,7 +31,7 @@
 
 namespace kj {
 
-class Timer {
+class KJ_ASYNC_API Timer {
   // Interface to time and timer functionality.
   //
   // Each `Timer` may have a different origin, and some `Timer`s may in fact tick at a different
@@ -67,7 +67,7 @@ private:
   static kj::Exception makeTimeoutException();
 };
 
-class TimerImpl final: public Timer {
+class KJ_ASYNC_API TimerImpl final: public Timer {
   // Implementation of Timer that expects an external caller -- usually, the EventPort
   // implementation -- to tell it when time has advanced.
 

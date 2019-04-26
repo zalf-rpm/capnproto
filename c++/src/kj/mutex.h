@@ -45,7 +45,7 @@ namespace kj {
 
 namespace _ {  // private
 
-class Mutex {
+class KJ_API Mutex {
   // Internal implementation details.  See `MutexGuarded<T>`.
 
 public:
@@ -102,7 +102,7 @@ private:
 #endif
 };
 
-class Once {
+class KJ_API Once {
   // Internal implementation details.  See `Lazy<T>`.
 
 public:
@@ -115,7 +115,7 @@ public:
 #endif
   KJ_DISALLOW_COPY(Once);
 
-  class Initializer {
+  class KJ_API Initializer {
   public:
     virtual void run() = 0;
   };

@@ -196,7 +196,7 @@ constexpr ParserRef<Input, OutputType<ParserImpl, Input>> ref(ParserImpl& impl) 
 // any
 // Output = one token
 
-class Any_ {
+class KJ_API Any_ {
 public:
   template <typename Input>
   Maybe<Decay<decltype(instance<Input>().consume())>> operator()(Input& input) const {
@@ -802,7 +802,7 @@ constexpr NotLookingAt_<SubParser> notLookingAt(SubParser&& subParser) {
 // endOfInput()
 // Output = Tuple<>, only succeeds if at end-of-input
 
-class EndOfInput_ {
+class KJ_API EndOfInput_ {
 public:
   template <typename Input>
   Maybe<Tuple<>> operator()(Input& input) const {

@@ -28,6 +28,7 @@
 #include <initializer_list>
 #include "array.h"
 #include <string.h>
+#include <utility>
 
 namespace kj {
   class StringPtr;
@@ -67,7 +68,7 @@ namespace kj {
 // a NUL byte appear immediately after the last byte of the content.  This terminator byte is not
 // counted in the string's size.
 
-class StringPtr {
+class KJ_API StringPtr {
 public:
   inline StringPtr(): content("", 1) {}
   inline StringPtr(decltype(nullptr)): content("", 1) {}
@@ -148,19 +149,19 @@ private:
 inline bool operator==(const char* a, const StringPtr& b) { return b == a; }
 inline bool operator!=(const char* a, const StringPtr& b) { return b != a; }
 
-template <> char StringPtr::parseAs<char>() const;
-template <> signed char StringPtr::parseAs<signed char>() const;
-template <> unsigned char StringPtr::parseAs<unsigned char>() const;
-template <> short StringPtr::parseAs<short>() const;
-template <> unsigned short StringPtr::parseAs<unsigned short>() const;
-template <> int StringPtr::parseAs<int>() const;
-template <> unsigned StringPtr::parseAs<unsigned>() const;
-template <> long StringPtr::parseAs<long>() const;
-template <> unsigned long StringPtr::parseAs<unsigned long>() const;
-template <> long long StringPtr::parseAs<long long>() const;
-template <> unsigned long long StringPtr::parseAs<unsigned long long>() const;
-template <> float StringPtr::parseAs<float>() const;
-template <> double StringPtr::parseAs<double>() const;
+template <> KJ_API char StringPtr::parseAs<char>() const;
+template <> KJ_API signed char StringPtr::parseAs<signed char>() const;
+template <> KJ_API unsigned char StringPtr::parseAs<unsigned char>() const;
+template <> KJ_API short StringPtr::parseAs<short>() const;
+template <> KJ_API unsigned short StringPtr::parseAs<unsigned short>() const;
+template <> KJ_API int StringPtr::parseAs<int>() const;
+template <> KJ_API unsigned StringPtr::parseAs<unsigned>() const;
+template <> KJ_API long StringPtr::parseAs<long>() const;
+template <> KJ_API unsigned long StringPtr::parseAs<unsigned long>() const;
+template <> KJ_API long long StringPtr::parseAs<long long>() const;
+template <> KJ_API unsigned long long StringPtr::parseAs<unsigned long long>() const;
+template <> KJ_API float StringPtr::parseAs<float>() const;
+template <> KJ_API double StringPtr::parseAs<double>() const;
 
 // =======================================================================================
 // String -- A NUL-terminated Array<char> containing UTF-8 text.
@@ -172,7 +173,7 @@ template <> double StringPtr::parseAs<double>() const;
 // To allocate a String, you must call kj::heapString().  We do not implement implicit copying to
 // the heap because this hides potential inefficiency from the developer.
 
-class String {
+class KJ_API String {
 public:
   String() = default;
   inline String(decltype(nullptr)): content(nullptr) {}
@@ -238,15 +239,15 @@ private:
 inline bool operator==(const char* a, const String& b) { return b == a; }
 inline bool operator!=(const char* a, const String& b) { return b != a; }
 
-String heapString(size_t size);
+KJ_API String heapString(size_t size);
 // Allocate a String of the given size on the heap, not including NUL terminator.  The NUL
 // terminator will be initialized automatically but the rest of the content is not initialized.
 
-String heapString(const char* value);
-String heapString(const char* value, size_t size);
-String heapString(StringPtr value);
-String heapString(const String& value);
-String heapString(ArrayPtr<const char> value);
+KJ_API String heapString(const char* value);
+KJ_API String heapString(const char* value, size_t size);
+KJ_API String heapString(StringPtr value);
+KJ_API String heapString(const String& value);
+KJ_API String heapString(ArrayPtr<const char> value);
 // Allocates a copy of the given value on the heap.
 
 // =======================================================================================
@@ -319,7 +320,7 @@ template <typename T, typename... Rest>
 char* fillLimited(char* __restrict__ target, char* limit, Delimited<T> first,Rest&&... rest);
 // As with StringTree, we special-case Delimited<T>.
 
-struct Stringifier {
+struct KJ_API Stringifier {
   // This is a dummy type with only one instance: STR (below).  To make an arbitrary type
   // stringifiable, define `operator*(Stringifier, T)` to return an iterable container of `char`.
   // The container type must have a `size()` method.  Be sure to declare the operator in the same
@@ -356,19 +357,19 @@ struct Stringifier {
   StringPtr operator*(decltype(nullptr)) const;
   StringPtr operator*(bool b) const;
 
-  CappedArray<char, 5> operator*(signed char i) const;
-  CappedArray<char, 5> operator*(unsigned char i) const;
-  CappedArray<char, sizeof(short) * 3 + 2> operator*(short i) const;
-  CappedArray<char, sizeof(unsigned short) * 3 + 2> operator*(unsigned short i) const;
-  CappedArray<char, sizeof(int) * 3 + 2> operator*(int i) const;
-  CappedArray<char, sizeof(unsigned int) * 3 + 2> operator*(unsigned int i) const;
-  CappedArray<char, sizeof(long) * 3 + 2> operator*(long i) const;
-  CappedArray<char, sizeof(unsigned long) * 3 + 2> operator*(unsigned long i) const;
-  CappedArray<char, sizeof(long long) * 3 + 2> operator*(long long i) const;
-  CappedArray<char, sizeof(unsigned long long) * 3 + 2> operator*(unsigned long long i) const;
-  CappedArray<char, 24> operator*(float f) const;
-  CappedArray<char, 32> operator*(double f) const;
-  CappedArray<char, sizeof(const void*) * 2 + 1> operator*(const void* s) const;
+	CappedArray<char, 5> operator*(signed char i) const;
+	CappedArray<char, 5> operator*(unsigned char i) const;
+	CappedArray<char, sizeof(short) * 3 + 2> operator*(short i) const;
+	CappedArray<char, sizeof(unsigned short) * 3 + 2> operator*(unsigned short i) const;
+	CappedArray<char, sizeof(int) * 3 + 2> operator*(int i) const;
+	CappedArray<char, sizeof(unsigned int) * 3 + 2> operator*(unsigned int i) const;
+	CappedArray<char, sizeof(long) * 3 + 2> operator*(long i) const;
+	CappedArray<char, sizeof(unsigned long) * 3 + 2> operator*(unsigned long i) const;
+	CappedArray<char, sizeof(long long) * 3 + 2> operator*(long long i) const;
+	CappedArray<char, sizeof(unsigned long long) * 3 + 2> operator*(unsigned long long i) const;
+	CappedArray<char, 24> operator*(float f) const;
+	CappedArray<char, 32> operator*(double f) const;
+	CappedArray<char, sizeof(const void*) * 2 + 1> operator*(const void* s) const;
 
   template <typename T>
   _::Delimited<ArrayPtr<T>> operator*(ArrayPtr<T> arr) const;
@@ -397,11 +398,11 @@ auto toCharSequence(T&& value) -> decltype(_::STR * kj::fwd<T>(value)) {
   return _::STR * kj::fwd<T>(value);
 }
 
-CappedArray<char, sizeof(unsigned char) * 2 + 1> hex(unsigned char i);
-CappedArray<char, sizeof(unsigned short) * 2 + 1> hex(unsigned short i);
-CappedArray<char, sizeof(unsigned int) * 2 + 1> hex(unsigned int i);
-CappedArray<char, sizeof(unsigned long) * 2 + 1> hex(unsigned long i);
-CappedArray<char, sizeof(unsigned long long) * 2 + 1> hex(unsigned long long i);
+KJ_API CappedArray<char, sizeof(unsigned char) * 2 + 1> hex(unsigned char i);
+KJ_API CappedArray<char, sizeof(unsigned short) * 2 + 1> hex(unsigned short i);
+KJ_API CappedArray<char, sizeof(unsigned int) * 2 + 1> hex(unsigned int i);
+KJ_API CappedArray<char, sizeof(unsigned long) * 2 + 1> hex(unsigned long i);
+KJ_API CappedArray<char, sizeof(unsigned long long) * 2 + 1> hex(unsigned long long i);
 
 template <typename... Params>
 String str(Params&&... params) {

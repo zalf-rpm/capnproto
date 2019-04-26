@@ -42,7 +42,7 @@
 
 namespace kj {
 
-class Win32EventPort: public EventPort {
+class KJ_ASYNC_API Win32EventPort: public EventPort {
   // Abstract base interface for EventPorts that can listen on Win32 event types. Due to the
   // absurd complexity of the Win32 API, it's not possible to standardize on a single
   // implementation of EventPort. In particular, there is no way for a single thread to use I/O
@@ -63,7 +63,7 @@ public:
     DWORD bytesTransferred;
   };
 
-  class IoOperation {
+  class KJ_ASYNC_API IoOperation {
   public:
     virtual LPOVERLAPPED getOverlapped() = 0;
     // Gets the OVERLAPPED structure to pass to the Win32 I/O call. Do NOT modify it; just pass it
@@ -86,7 +86,7 @@ public:
     // however, drop the `IoObserver`.
   };
 
-  class IoObserver {
+  class KJ_ASYNC_API IoObserver {
   public:
     virtual Own<IoOperation> newOperation(uint64_t offset) = 0;
     // Begin an I/O operation. For file operations, `offset` is the offset within the file at
@@ -114,7 +114,7 @@ public:
   //   implementation is based on I/O completion ports, or if you need to wait on more than 64
   //   handles at once.
 
-  class SignalObserver {
+  class KJ_ASYNC_API SignalObserver {
   public:
     virtual Promise<void> onSignaled() = 0;
     // Returns a promise that completes the next time the handle enters the signaled state.
@@ -153,7 +153,7 @@ public:
   virtual Timer& getTimer() = 0;
 };
 
-class Win32WaitObjectThreadPool {
+class KJ_ASYNC_API Win32WaitObjectThreadPool {
   // Helper class that implements Win32EventPort::observeSignalState() by spawning additional
   // threads as needed to perform the actual waiting.
   //
@@ -184,7 +184,7 @@ public:
   // last call to prepareMainThreadWait()).
 };
 
-class Win32IocpEventPort final: public Win32EventPort {
+class KJ_ASYNC_API Win32IocpEventPort final: public Win32EventPort {
   // An EventPort implementation which uses Windows I/O completion ports to listen for events.
   //
   // With this implementation, observeSignalState() requires spawning a separate thread.

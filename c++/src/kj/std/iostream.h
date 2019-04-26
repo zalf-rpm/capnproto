@@ -35,7 +35,7 @@
 namespace kj {
 namespace std {
 
-class StdOutputStream: public kj::OutputStream {
+class KJ_API StdOutputStream: public kj::OutputStream {
 
 public:
   explicit StdOutputStream(::std::ostream& stream) : stream_(stream) {}
@@ -62,7 +62,7 @@ private:
 
 };
 
-class StdInputStream: public kj::InputStream {
+class KJ_API StdInputStream: public kj::InputStream {
 
 public:
   explicit StdInputStream(::std::istream& stream) : stream_(stream) {}

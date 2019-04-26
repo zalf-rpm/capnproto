@@ -35,14 +35,14 @@ namespace kj {
 class ExceptionImpl;
 template <typename T> class Function;
 
-class Exception {
+class KJ_API Exception {
   // Exception thrown in case of fatal errors.
   //
   // Actually, a subclass of this which also implements std::exception will be thrown, but we hide
   // that fact from the interface to avoid #including <exception>.
 
 public:
-  enum class Type {
+  enum class KJ_API Type {
     // What kind of failure?
 
     FAILED = 0,
@@ -134,12 +134,12 @@ private:
   friend class ExceptionImpl;
 };
 
-StringPtr KJ_STRINGIFY(Exception::Type type);
-String KJ_STRINGIFY(const Exception& e);
+KJ_API StringPtr KJ_STRINGIFY(Exception::Type type);
+KJ_API String KJ_STRINGIFY(const Exception& e);
 
 // =======================================================================================
 
-enum class LogSeverity {
+enum class KJ_API LogSeverity {
   INFO,      // Information describing what the code is up to, which users may request to see
              // with a flag like `--verbose`.  Does not indicate a problem.  Not printed by
              // default; you must call setLogLevel(INFO) to enable.
@@ -153,7 +153,7 @@ enum class LogSeverity {
 
 StringPtr KJ_STRINGIFY(LogSeverity severity);
 
-class ExceptionCallback {
+class KJ_API ExceptionCallback {
   // If you don't like C++ exceptions, you may implement and register an ExceptionCallback in order
   // to perform your own exception handling.  For example, a reasonable thing to do is to have
   // onRecoverableException() set a flag indicating that an error occurred, and then check for that
@@ -194,7 +194,7 @@ public:
   //
   // The global default implementation writes the text to stderr.
 
-  enum class StackTraceMode {
+  enum class KJ_API StackTraceMode {
     FULL,
     // Stringifying a stack trace will attempt to determine source file and line numbers. This may
     // be expensive. For example, on Linux, this shells out to `addr2line`.
@@ -229,19 +229,19 @@ private:
   ExceptionCallback(ExceptionCallback& next);
 
   class RootExceptionCallback;
-  friend ExceptionCallback& getExceptionCallback();
+  friend KJ_API ExceptionCallback& getExceptionCallback();
 
   friend class Thread;
 };
 
-ExceptionCallback& getExceptionCallback();
+KJ_API ExceptionCallback& getExceptionCallback();
 // Returns the current exception callback.
 
-KJ_NOINLINE KJ_NORETURN(void throwFatalException(kj::Exception&& exception, uint ignoreCount = 0));
+KJ_API KJ_NOINLINE KJ_NORETURN(void throwFatalException(kj::Exception&& exception, uint ignoreCount = 0));
 // Invoke the exception callback to throw the given fatal exception.  If the exception callback
 // returns, abort.
 
-KJ_NOINLINE void throwRecoverableException(kj::Exception&& exception, uint ignoreCount = 0);
+KJ_API KJ_NOINLINE void throwRecoverableException(kj::Exception&& exception, uint ignoreCount = 0);
 // Invoke the exception callback to throw the given recoverable exception.  If the exception
 // callback returns, return normally.
 
@@ -258,7 +258,7 @@ Maybe<Exception> runCatchingExceptions(Func&& func) noexcept;
 // If exception are disabled (e.g. with -fno-exceptions), this will still detect whether any
 // recoverable exceptions occurred while running the function and will return those.
 
-class UnwindDetector {
+class KJ_API UnwindDetector {
   // Utility for detecting when a destructor is called due to unwind.  Useful for:
   // - Avoiding throwing exceptions in this case, which would terminate the program.
   // - Detecting whether to commit or roll back a transaction.
@@ -289,7 +289,7 @@ private:
 
 namespace _ {  // private
 
-class Runnable {
+class KJ_API Runnable {
 public:
   virtual void run() = 0;
 };
@@ -305,7 +305,7 @@ private:
   Func func;
 };
 
-Maybe<Exception> runCatchingExceptions(Runnable& runnable) noexcept;
+KJ_API Maybe<Exception> runCatchingExceptions(Runnable& runnable) noexcept;
 
 }  // namespace _ (private)
 
@@ -337,7 +337,7 @@ void UnwindDetector::catchExceptionsIfUnwinding(Func&& func) const {
 
 // =======================================================================================
 
-KJ_NOINLINE ArrayPtr<void* const> getStackTrace(ArrayPtr<void*> space, uint ignoreCount);
+KJ_API KJ_NOINLINE ArrayPtr<void* const> getStackTrace(ArrayPtr<void*> space, uint ignoreCount);
 // Attempt to get the current stack trace, returning a list of pointers to instructions. The
 // returned array is a slice of `space`. Provide a larger `space` to get a deeper stack trace.
 // If the platform doesn't support stack traces, returns an empty array.
@@ -350,7 +350,7 @@ KJ_NOINLINE ArrayPtr<void* const> getStackTrace(ArrayPtr<void*> space, uint igno
 // is never exactly equal to `space.begin()` due to this effect, even if `ignoreCount` is zero
 // since `getStackTrace()` needs to ignore its own internal frames).
 
-String stringifyStackTrace(ArrayPtr<void* const>);
+KJ_API String stringifyStackTrace(ArrayPtr<void* const>);
 // Convert the stack trace to a string with file names and line numbers. This may involve executing
 // suprocesses.
 
@@ -363,15 +363,15 @@ StringPtr stringifyStackTraceAddresses(ArrayPtr<void* const> trace, ArrayPtr<cha
 // latter case is preferred when ASLR is in effect and has loaded different modules at different
 // addresses.
 
-String getStackTrace();
+KJ_API String getStackTrace();
 // Get a stack trace right now and stringify it. Useful for debugging.
 
-void printStackTraceOnCrash();
+KJ_API void printStackTraceOnCrash();
 // Registers signal handlers on common "crash" signals like SIGSEGV that will (attempt to) print
 // a stack trace. You should call this as early as possible on program startup. Programs using
 // KJ_MAIN get this automatically.
 
-kj::StringPtr trimSourceFilename(kj::StringPtr filename);
+KJ_API kj::StringPtr trimSourceFilename(kj::StringPtr filename);
 // Given a source code file name, trim off noisy prefixes like "src/" or
 // "/ekam-provider/canonical/".
 

@@ -251,11 +251,11 @@ typedef unsigned char byte;
 
 namespace _ {  // private
 
-KJ_NORETURN(void inlineRequireFailure(
+KJ_NORETURN(KJ_API void inlineRequireFailure(
     const char* file, int line, const char* expectation, const char* macroArgs,
     const char* message = nullptr));
 
-KJ_NORETURN(void unreachable());
+KJ_NORETURN(KJ_API void unreachable());
 
 }  // namespace _ (private)
 
@@ -591,7 +591,7 @@ inline constexpr size_t size(T&& arr) { return arr.size(); }
 // Returns the size of the parameter, whether the parameter is a regular C array or a container
 // with a `.size()` method.
 
-class MaxValue_ {
+class KJ_API MaxValue_ {
 private:
   template <typename T>
   inline constexpr T maxSigned() const {
@@ -621,7 +621,7 @@ public:
   }
 };
 
-class MinValue_ {
+class KJ_API MinValue_ {
 private:
   template <typename T>
   inline constexpr T minSigned() const {
@@ -697,7 +697,7 @@ inline constexpr float nan() { return __builtin_nanf(""); }
 inline constexpr float inf() { return (float)(1e300 * 1e300); }
 #pragma warning(pop)
 
-float nan();
+KJ_API float nan();
 // Unfortunatley, inf() * 0.0f produces a NaN with the sign bit set, whereas our preferred
 // canonical NaN should not have the sign bit set. std::numeric_limits<float>::quiet_NaN()
 // returns the correct NaN, but we don't want to #include that here. So, we give up and make

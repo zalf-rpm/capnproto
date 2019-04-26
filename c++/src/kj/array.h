@@ -34,7 +34,7 @@ namespace kj {
 // =======================================================================================
 // ArrayDisposer -- Implementation details.
 
-class ArrayDisposer {
+class KJ_API ArrayDisposer {
   // Much like Disposer from memory.h.
 
 protected:
@@ -62,7 +62,7 @@ private:
   struct Dispose_;
 };
 
-class ExceptionSafeArrayUtil {
+class KJ_API ExceptionSafeArrayUtil {
   // Utility class that assists in constructing or destroying elements of an array, where the
   // constructor or destructor could throw exceptions.  In case of an exception,
   // ExceptionSafeArrayUtil's destructor will call destructors on all elements that have been
@@ -101,7 +101,7 @@ private:
   void (*destroyElement)(void*);
 };
 
-class DestructorOnlyArrayDisposer: public ArrayDisposer {
+class KJ_API DestructorOnlyArrayDisposer: public ArrayDisposer {
 public:
 	static const DestructorOnlyArrayDisposer& instance() {
 		static const DestructorOnlyArrayDisposer doad; return doad;
@@ -112,7 +112,7 @@ public:
                    size_t capacity, void (*destroyElement)(void*)) const override;
 };
 
-class NullArrayDisposer: public ArrayDisposer {
+class KJ_API NullArrayDisposer: public ArrayDisposer {
   // An ArrayDisposer that does nothing.  Can be used to construct a fake Arrays that doesn't
   // actually own its content.
 
@@ -273,7 +273,7 @@ static_assert(!canMemcpy<Array<char>>(), "canMemcpy<>() is broken");
 
 namespace _ {  // private
 
-class HeapArrayDisposer final: public ArrayDisposer {
+class KJ_API HeapArrayDisposer final: public ArrayDisposer {
 public:
   template <typename T>
   static T* allocate(size_t count);

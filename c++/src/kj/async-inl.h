@@ -41,7 +41,7 @@ namespace _ {  // private
 template <typename T>
 class ExceptionOr;
 
-class ExceptionOrValue {
+class KJ_ASYNC_API ExceptionOrValue {
 public:
   ExceptionOrValue(bool, Exception&& exception): exception(kj::mv(exception)) {}
   KJ_DISALLOW_COPY(ExceptionOrValue);
@@ -78,7 +78,7 @@ public:
   Maybe<T> value;
 };
 
-class Event {
+class KJ_ASYNC_API Event {
   // An event waiting to be executed.  Not for direct use by applications -- promises use this
   // internally.
 
@@ -126,7 +126,7 @@ private:
   bool firing = false;
 };
 
-class PromiseNode {
+class KJ_ASYNC_API PromiseNode {
   // A Promise<T> contains a chain of PromiseNodes tracking the pending transformations.
   //
   // To reduce generated code bloat, PromiseNode is not a template.  Instead, it makes very hacky
@@ -175,7 +175,7 @@ protected:
 
 // -------------------------------------------------------------------
 
-class ImmediatePromiseNodeBase: public PromiseNode {
+class KJ_ASYNC_API ImmediatePromiseNodeBase: public PromiseNode {
 public:
   ImmediatePromiseNodeBase();
   ~ImmediatePromiseNodeBase() noexcept(false);
@@ -198,7 +198,7 @@ private:
   ExceptionOr<T> result;
 };
 
-class ImmediateBrokenPromiseNode final: public ImmediatePromiseNodeBase {
+class KJ_ASYNC_API ImmediateBrokenPromiseNode final: public ImmediatePromiseNodeBase {
 public:
   ImmediateBrokenPromiseNode(Exception&& exception);
 
@@ -210,7 +210,7 @@ private:
 
 // -------------------------------------------------------------------
 
-class AttachmentPromiseNodeBase: public PromiseNode {
+class KJ_ASYNC_API AttachmentPromiseNodeBase: public PromiseNode {
 public:
   AttachmentPromiseNodeBase(Own<PromiseNode>&& dependency);
 
@@ -256,7 +256,7 @@ private:
 #pragma GCC diagnostic ignored "-Wclass-memaccess"
 #endif
 
-class PtmfHelper {
+class KJ_ASYNC_API PtmfHelper {
   // This class is a private helper for GetFunctorStartAddress. The class represents the internal
   // representation of a pointer-to-member-function.
 
@@ -347,7 +347,7 @@ struct GetFunctorStartAddress<Void&&>: public GetFunctorStartAddress<> {};
 // Hack for TransformPromiseNode use case: an input type of `Void` indicates that the function
 // actually has no parameters.
 
-class TransformPromiseNodeBase: public PromiseNode {
+class KJ_ASYNC_API TransformPromiseNodeBase: public PromiseNode {
 public:
   TransformPromiseNodeBase(Own<PromiseNode>&& dependency, void* continuationTracePtr);
 
@@ -414,7 +414,7 @@ private:
 
 class ForkHubBase;
 
-class ForkBranchBase: public PromiseNode {
+class KJ_ASYNC_API ForkBranchBase: public PromiseNode {
 public:
   ForkBranchBase(Own<ForkHubBase>&& hub);
   ~ForkBranchBase() noexcept(false);
@@ -489,7 +489,7 @@ public:
 
 // -------------------------------------------------------------------
 
-class ForkHubBase: public Refcounted, protected Event {
+class KJ_ASYNC_API ForkHubBase: public Refcounted, protected Event {
 public:
   ForkHubBase(Own<PromiseNode>&& inner, ExceptionOrValue& resultRef);
 
@@ -548,7 +548,7 @@ inline ExceptionOrValue& ForkBranchBase::getHubResultRef() {
 
 // -------------------------------------------------------------------
 
-class ChainPromiseNode final: public PromiseNode, public Event {
+class KJ_ASYNC_API ChainPromiseNode final: public PromiseNode, public Event {
   // Promise node which reduces Promise<Promise<T>> to Promise<T>.
   //
   // `Event` is only a public base class because otherwise we can't cast Own<ChainPromiseNode> to
@@ -603,7 +603,7 @@ inline Promise<T> maybeReduce(Promise<T>&& promise, ...) {
 
 // -------------------------------------------------------------------
 
-class ExclusiveJoinPromiseNode final: public PromiseNode {
+class KJ_ASYNC_API ExclusiveJoinPromiseNode final: public PromiseNode {
 public:
   ExclusiveJoinPromiseNode(Own<PromiseNode> left, Own<PromiseNode> right);
   ~ExclusiveJoinPromiseNode() noexcept(false);
@@ -613,7 +613,7 @@ public:
   PromiseNode* getInnerForTrace() override;
 
 private:
-  class Branch: public Event {
+  class KJ_ASYNC_API Branch: public Event {
   public:
     Branch(ExclusiveJoinPromiseNode& joinNode, Own<PromiseNode> dependency);
     ~Branch() noexcept(false);
@@ -636,7 +636,7 @@ private:
 
 // -------------------------------------------------------------------
 
-class ArrayJoinPromiseNodeBase: public PromiseNode {
+class KJ_ASYNC_API ArrayJoinPromiseNodeBase: public PromiseNode {
 public:
   ArrayJoinPromiseNodeBase(Array<Own<PromiseNode>> promises,
                            ExceptionOrValue* resultParts, size_t partSize);
@@ -654,7 +654,7 @@ private:
   uint countLeft;
   OnReadyEvent onReadyEvent;
 
-  class Branch final: public Event {
+  class KJ_ASYNC_API Branch final: public Event {
   public:
     Branch(ArrayJoinPromiseNodeBase& joinNode, Own<PromiseNode> dependency,
            ExceptionOrValue& output);
@@ -714,7 +714,7 @@ private:
 
 // -------------------------------------------------------------------
 
-class EagerPromiseNodeBase: public PromiseNode, protected Event {
+class KJ_ASYNC_API EagerPromiseNodeBase: public PromiseNode, protected Event {
   // A PromiseNode that eagerly evaluates its dependency even if its dependent does not eagerly
   // evaluate it.
 
@@ -756,7 +756,7 @@ Own<PromiseNode> spark(Own<PromiseNode>&& node) {
 
 // -------------------------------------------------------------------
 
-class AdapterPromiseNodeBase: public PromiseNode {
+class KJ_ASYNC_API AdapterPromiseNodeBase: public PromiseNode {
 public:
   void onReady(Event* event) noexcept override;
 
@@ -850,11 +850,11 @@ struct IdentityFunc<Promise<T>> {
   }
 };
 template <>
-struct IdentityFunc<void> {
+struct KJ_ASYNC_API IdentityFunc<void> {
   inline void operator()() const {}
 };
 template <>
-struct IdentityFunc<Promise<void>> {
+struct KJ_ASYNC_API IdentityFunc<Promise<void>> {
   Promise<void> operator()() const;
   // This can't be inline because it will make the translation unit depend on kj-async. Awkwardly,
   // Cap'n Proto relies on being able to include this header without creating such a link-time
