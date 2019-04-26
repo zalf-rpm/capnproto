@@ -302,7 +302,8 @@ protected:
 // TODO(msvc): MSVC 2015 can't initialize a constexpr's vtable correctly.
 const MmapDisposer mmapDisposer = MmapDisposer();
 #else
-constexpr MmapDisposer mmapDisposer = MmapDisposer();
+//constexpr MmapDisposer mmapDisposer = MmapDisposer();
+const MmapDisposer& mmapDisposer(){ static const MmapDisposer mmd; return mmd; }
 #endif
 
 void* win32Mmap(HANDLE handle, MmapRange range, DWORD pageProtect, DWORD access) {
@@ -431,14 +432,14 @@ public:
     auto range = getMmapRange(offset, size);
     const void* mapping = win32Mmap(handle, range, PAGE_READONLY, FILE_MAP_READ);
     return Array<const byte>(reinterpret_cast<const byte*>(mapping) + (offset - range.offset),
-                             size, mmapDisposer);
+                             size, mmapDisposer());
   }
 
   Array<byte> mmapPrivate(uint64_t offset, uint64_t size) const {
     auto range = getMmapRange(offset, size);
     void* mapping = win32Mmap(handle, range, PAGE_READONLY, FILE_MAP_COPY);
     return Array<byte>(reinterpret_cast<byte*>(mapping) + (offset - range.offset),
-                       size, mmapDisposer);
+                       size, mmapDisposer());
   }
 
   // File ----------------------------------------------------------------------
@@ -566,7 +567,7 @@ public:
     auto range = getMmapRange(offset, size);
     void* mapping = win32Mmap(handle, range, PAGE_READWRITE, FILE_MAP_ALL_ACCESS);
     auto array = Array<byte>(reinterpret_cast<byte*>(mapping) + (offset - range.offset),
-                             size, mmapDisposer);
+                             size, mmapDisposer());
     return heap<WritableFileMappingImpl>(kj::mv(array));
   }
 

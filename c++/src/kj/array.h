@@ -37,6 +37,9 @@ namespace kj {
 class KJ_API ArrayDisposer {
   // Much like Disposer from memory.h.
 
+//public:
+//	constexpr ArrayDisposer(){}
+
 protected:
   // Do not declare a destructor, as doing so will force a global initializer for
   // HeapArrayDisposer::instance.

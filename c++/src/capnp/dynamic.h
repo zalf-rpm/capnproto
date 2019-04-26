@@ -92,7 +92,7 @@ struct DynamicCapability {
   class Client;
   class Server;
 };
-template <> class CAPNP_RPC_API Orphan<DynamicValue>;
+template <> class CAPNP_API Orphan<DynamicValue>;
 
 template <Kind k> struct DynamicTypeFor_;
 template <> struct DynamicTypeFor_<Kind::ENUM> { typedef DynamicEnum Type; };
@@ -130,7 +130,7 @@ template <> inline constexpr Style style<DynamicCapability>() { return Style::CA
 
 // -------------------------------------------------------------------
 
-class CAPNP_RPC_API DynamicEnum {
+class CAPNP_API DynamicEnum {
 public:
   DynamicEnum() = default;
   inline DynamicEnum(EnumSchema::Enumerant enumerant)
@@ -185,7 +185,7 @@ enum class HasMode: uint8_t {
   // on the wire (since primitive values are XORed by their defined default value when encoded).
 };
 
-class CAPNP_RPC_API DynamicStruct::Reader {
+class CAPNP_API DynamicStruct::Reader {
 public:
   typedef DynamicStruct Reads;
 
@@ -252,7 +252,7 @@ private:
   friend class AnyStruct::Reader;
 };
 
-class CAPNP_RPC_API DynamicStruct::Builder {
+class CAPNP_API DynamicStruct::Builder {
 public:
   typedef DynamicStruct Builds;
 
@@ -343,7 +343,7 @@ private:
   friend class AnyStruct::Builder;
 };
 
-class CAPNP_RPC_API DynamicStruct::Pipeline {
+class CAPNP_API DynamicStruct::Pipeline {
 public:
   typedef DynamicStruct Pipelines;
 
@@ -373,7 +373,7 @@ private:
 
 // -------------------------------------------------------------------
 
-class CAPNP_RPC_API DynamicList::Reader {
+class CAPNP_API DynamicList::Reader {
 public:
   typedef DynamicList Reads;
 
@@ -417,7 +417,7 @@ private:
   friend class Orphan<AnyPointer>;
 };
 
-class CAPNP_RPC_API DynamicList::Builder {
+class CAPNP_API DynamicList::Builder {
 public:
   typedef DynamicList Builds;
 
@@ -473,7 +473,7 @@ private:
 
 // -------------------------------------------------------------------
 
-class CAPNP_RPC_API DynamicCapability::Client: public Capability::Client {
+class CAPNP_API DynamicCapability::Client: public Capability::Client {
 public:
   typedef DynamicCapability Calls;
   typedef DynamicCapability Reads;
@@ -522,7 +522,7 @@ private:
   friend struct _::PointerHelpers;
 };
 
-class CAPNP_RPC_API DynamicCapability::Server: public Capability::Server {
+class CAPNP_RPC_API  DynamicCapability::Server: public Capability::Server {
 public:
   typedef DynamicCapability Serves;
 
@@ -541,7 +541,7 @@ private:
 };
 
 template <>
-class CAPNP_RPC_API Request<DynamicStruct, DynamicStruct>: public DynamicStruct::Builder {
+class CAPNP_API Request<DynamicStruct, DynamicStruct>: public DynamicStruct::Builder {
   // Specialization of `Request<T, U>` for DynamicStruct.
 
 public:
@@ -564,7 +564,7 @@ private:
 };
 
 template <>
-class CAPNP_RPC_API CallContext<DynamicStruct, DynamicStruct>: public kj::DisallowConstCopy {
+class CAPNP_API CallContext<DynamicStruct, DynamicStruct>: public kj::DisallowConstCopy {
   // Wrapper around CallContextHook with a specific return type.
   //
   // Methods of this class may only be called from within the server's event loop, not from other
@@ -610,7 +610,7 @@ template <> struct ReaderFor_ <DynamicCapability, Kind::OTHER> { typedef Dynamic
 template <> struct BuilderFor_<DynamicCapability, Kind::OTHER> { typedef DynamicCapability::Client Type; };
 template <> struct PipelineFor_<DynamicCapability, Kind::OTHER> { typedef DynamicCapability::Client Type; };
 
-class CAPNP_RPC_API DynamicValue::Reader {
+class CAPNP_API DynamicValue::Reader {
 public:
   typedef DynamicValue Reads;
 
@@ -714,7 +714,7 @@ private:
   friend class Orphanage;  // to speed up newOrphanCopy(DynamicValue::Reader)
 };
 
-class CAPNP_RPC_API DynamicValue::Builder {
+class CAPNP_API DynamicValue::Builder {
 public:
   typedef DynamicValue Builds;
 
@@ -790,7 +790,7 @@ private:
   friend class Orphan<DynamicValue>;
 };
 
-class CAPNP_RPC_API DynamicValue::Pipeline {
+class CAPNP_API DynamicValue::Pipeline {
 public:
   typedef DynamicValue Pipelines;
 
@@ -820,19 +820,19 @@ private:
   // specialization.  Has a method apply() which does the work.
 };
 
-CAPNP_RPC_API kj::StringTree KJ_STRINGIFY(const DynamicValue::Reader& value);
-CAPNP_RPC_API kj::StringTree KJ_STRINGIFY(const DynamicValue::Builder& value);
-CAPNP_RPC_API kj::StringTree KJ_STRINGIFY(DynamicEnum value);
-CAPNP_RPC_API kj::StringTree KJ_STRINGIFY(const DynamicStruct::Reader& value);
-CAPNP_RPC_API kj::StringTree KJ_STRINGIFY(const DynamicStruct::Builder& value);
-CAPNP_RPC_API kj::StringTree KJ_STRINGIFY(const DynamicList::Reader& value);
-CAPNP_RPC_API kj::StringTree KJ_STRINGIFY(const DynamicList::Builder& value);
+CAPNP_API kj::StringTree KJ_STRINGIFY(const DynamicValue::Reader& value);
+CAPNP_API kj::StringTree KJ_STRINGIFY(const DynamicValue::Builder& value);
+CAPNP_API kj::StringTree KJ_STRINGIFY(DynamicEnum value);
+CAPNP_API kj::StringTree KJ_STRINGIFY(const DynamicStruct::Reader& value);
+CAPNP_API kj::StringTree KJ_STRINGIFY(const DynamicStruct::Builder& value);
+CAPNP_API kj::StringTree KJ_STRINGIFY(const DynamicList::Reader& value);
+CAPNP_API kj::StringTree KJ_STRINGIFY(const DynamicList::Builder& value);
 
 // -------------------------------------------------------------------
 // Orphan <-> Dynamic glue
 
 template <>
-class CAPNP_RPC_API Orphan<DynamicStruct> {
+class CAPNP_API Orphan<DynamicStruct> {
 public:
   Orphan() = default;
   KJ_DISALLOW_COPY(Orphan);
@@ -871,7 +871,7 @@ private:
 };
 
 template <>
-class CAPNP_RPC_API Orphan<DynamicList> {
+class CAPNP_API Orphan<DynamicList> {
 public:
   Orphan() = default;
   KJ_DISALLOW_COPY(Orphan);
@@ -911,7 +911,7 @@ private:
 };
 
 template <>
-class CAPNP_RPC_API Orphan<DynamicCapability> {
+class CAPNP_API Orphan<DynamicCapability> {
 public:
   Orphan() = default;
   KJ_DISALLOW_COPY(Orphan);
@@ -1054,23 +1054,23 @@ Orphan<T> Orphan<DynamicValue>::releaseAs() {
 }
 
 template <>
-CAPNP_RPC_API Orphan<AnyPointer> Orphan<DynamicValue>::releaseAs<AnyPointer>();
+CAPNP_API Orphan<AnyPointer> Orphan<DynamicValue>::releaseAs<AnyPointer>();
 template <>
-CAPNP_RPC_API Orphan<DynamicStruct> Orphan<DynamicValue>::releaseAs<DynamicStruct>();
+CAPNP_API Orphan<DynamicStruct> Orphan<DynamicValue>::releaseAs<DynamicStruct>();
 template <>
-CAPNP_RPC_API Orphan<DynamicList> Orphan<DynamicValue>::releaseAs<DynamicList>();
+CAPNP_API Orphan<DynamicList> Orphan<DynamicValue>::releaseAs<DynamicList>();
 template <>
-CAPNP_RPC_API Orphan<DynamicCapability> Orphan<DynamicValue>::releaseAs<DynamicCapability>();
+CAPNP_API Orphan<DynamicCapability> Orphan<DynamicValue>::releaseAs<DynamicCapability>();
 
 template <>
-struct CAPNP_RPC_API Orphanage::GetInnerBuilder<DynamicStruct, Kind::OTHER> {
+struct CAPNP_API Orphanage::GetInnerBuilder<DynamicStruct, Kind::OTHER> {
   static inline _::StructBuilder apply(DynamicStruct::Builder& t) {
     return t.builder;
   }
 };
 
 template <>
-struct CAPNP_RPC_API Orphanage::GetInnerBuilder<DynamicList, Kind::OTHER> {
+struct CAPNP_API Orphanage::GetInnerBuilder<DynamicList, Kind::OTHER> {
   static inline _::ListBuilder apply(DynamicList::Builder& t) {
     return t.builder;
   }
@@ -1098,13 +1098,13 @@ inline Orphan<DynamicCapability> Orphanage::newOrphanCopy<DynamicCapability::Cli
 }
 
 template <>
-CAPNP_RPC_API Orphan<DynamicValue> Orphanage::newOrphanCopy<DynamicValue::Reader>(
+CAPNP_API Orphan<DynamicValue> Orphanage::newOrphanCopy<DynamicValue::Reader>(
     DynamicValue::Reader copyFrom) const;
 
 namespace _ {  // private
 
 template <>
-struct CAPNP_RPC_API PointerHelpers<DynamicStruct, Kind::OTHER> {
+struct CAPNP_API PointerHelpers<DynamicStruct, Kind::OTHER> {
   // getDynamic() is used when an AnyPointer's get() accessor is passed arguments, because for
   // non-dynamic types PointerHelpers::get() takes a default value as the third argument, and we
   // don't want people to accidentally be able to provide their own default value.
@@ -1121,7 +1121,7 @@ struct CAPNP_RPC_API PointerHelpers<DynamicStruct, Kind::OTHER> {
 };
 
 template <>
-struct CAPNP_RPC_API PointerHelpers<DynamicList, Kind::OTHER> {
+struct CAPNP_API PointerHelpers<DynamicList, Kind::OTHER> {
   // getDynamic() is used when an AnyPointer's get() accessor is passed arguments, because for
   // non-dynamic types PointerHelpers::get() takes a default value as the third argument, and we
   // don't want people to accidentally be able to provide their own default value.
@@ -1138,7 +1138,7 @@ struct CAPNP_RPC_API PointerHelpers<DynamicList, Kind::OTHER> {
 };
 
 template <>
-struct CAPNP_RPC_API PointerHelpers<DynamicCapability, Kind::OTHER> {
+struct CAPNP_API PointerHelpers<DynamicCapability, Kind::OTHER> {
   // getDynamic() is used when an AnyPointer's get() accessor is passed arguments, because for
   // non-dynamic types PointerHelpers::get() takes a default value as the third argument, and we
   // don't want people to accidentally be able to provide their own default value.
@@ -1367,11 +1367,11 @@ inline DynamicValue::Reader::Reader(const char* value): Reader(Text::Reader(valu
 
 #define CAPNP_DECLARE_TYPE(discrim, typeName) \
 template <> \
-struct CAPNP_RPC_API DynamicValue::Reader::AsImpl<typeName> { \
+struct CAPNP_API DynamicValue::Reader::AsImpl<typeName> { \
   static ReaderFor<typeName> apply(const Reader& reader); \
 }; \
 template <> \
-struct CAPNP_RPC_API DynamicValue::Builder::AsImpl<typeName> { \
+struct CAPNP_API DynamicValue::Builder::AsImpl<typeName> { \
   static BuilderFor<typeName> apply(Builder& builder); \
 };
 
@@ -1400,11 +1400,11 @@ CAPNP_DECLARE_TYPE(ANY_POINTER, AnyPointer)
 // CAPNP_DECLARE_TYPE(Void) causes gcc 4.7 to segfault.  If I do it manually and remove the
 // ReaderFor<> and BuilderFor<> wrappers, it works.
 template <>
-struct CAPNP_RPC_API DynamicValue::Reader::AsImpl<Void> {
+struct CAPNP_API DynamicValue::Reader::AsImpl<Void> {
   static Void apply(const Reader& reader);
 };
 template <>
-struct CAPNP_RPC_API DynamicValue::Builder::AsImpl<Void> {
+struct CAPNP_API DynamicValue::Builder::AsImpl<Void> {
   static Void apply(Builder& builder);
 };
 
@@ -1492,11 +1492,11 @@ struct DynamicValue::Pipeline::AsImpl<T, Kind::INTERFACE> {
   }
 };
 template <>
-struct CAPNP_RPC_API DynamicValue::Pipeline::AsImpl<DynamicStruct, Kind::OTHER> {
+struct CAPNP_API DynamicValue::Pipeline::AsImpl<DynamicStruct, Kind::OTHER> {
   static PipelineFor<DynamicStruct> apply(Pipeline& pipeline);
 };
 template <>
-struct CAPNP_RPC_API DynamicValue::Pipeline::AsImpl<DynamicCapability, Kind::OTHER> {
+struct CAPNP_API DynamicValue::Pipeline::AsImpl<DynamicCapability, Kind::OTHER> {
   static PipelineFor<DynamicCapability> apply(Pipeline& pipeline);
 };
 
