@@ -40,8 +40,8 @@
 namespace kj {
 namespace _ {  // private
 
-	bool Debug::shouldLog(LogSeverity severity){ return severity >= minSeverity(); }
-	void Debug::setLogLevel(LogSeverity severity){ minSeverity() = severity; }
+//bool Debug::shouldLog(LogSeverity severity){ return severity >= minSeverity(); }
+//void Debug::setLogLevel(LogSeverity severity){ minSeverity() = severity; }
 
 //LogSeverity Debug::minSeverity = LogSeverity::WARNING;
 
