@@ -37,6 +37,13 @@
 #include <sys/wait.h>
 #include <sys/time.h>
 #include <errno.h>
+#include "mutex.h"
+
+#if __BIONIC__
+// Android's Bionic defines SIGRTMIN but using it in sigaddset() throws EINVAL, which means we
+// definitely can't actually use RT signals.
+#undef SIGRTMIN
+#endif
 
 namespace kj {
 namespace {
@@ -53,15 +60,19 @@ inline void delay() { usleep(10000); }
 void captureSignals() {
   static bool captured = false;
   if (!captured) {
-    captured = true;
-
     // We use SIGIO and SIGURG as our test signals because they're two signals that we can be
     // reasonably confident won't otherwise be delivered to any KJ or Cap'n Proto test.  We can't
     // use SIGUSR1 because it is reserved by UnixEventPort and SIGUSR2 is used by Valgrind on OSX.
     UnixEventPort::captureSignal(SIGURG);
     UnixEventPort::captureSignal(SIGIO);
 
+#ifdef SIGRTMIN
+    UnixEventPort::captureSignal(SIGRTMIN);
+#endif
+
     UnixEventPort::captureChildExit();
+
+    captured = true;
   }
 }
 
@@ -678,14 +689,49 @@ TEST(AsyncUnixTest, Wake) {
     EXPECT_FALSE(port.wait());
   }
 
-  bool woken = false;
-  Thread thread([&]() {
-    delay();
-    woken = true;
-    port.wake();
-  });
+  // Test wake() when already wait()ing.
+  {
+    Thread thread([&]() {
+      delay();
+      port.wake();
+    });
 
-  EXPECT_TRUE(port.wait());
+    EXPECT_TRUE(port.wait());
+  }
+
+  // Test wait() after wake() already happened.
+  {
+    Thread thread([&]() {
+      port.wake();
+    });
+
+    delay();
+    EXPECT_TRUE(port.wait());
+  }
+
+  // Test wake() during poll() busy loop.
+  {
+    Thread thread([&]() {
+      delay();
+      port.wake();
+    });
+
+    EXPECT_FALSE(port.poll());
+    while (!port.poll()) {}
+  }
+
+  // Test poll() when wake() already delivered.
+  {
+    EXPECT_FALSE(port.poll());
+
+    Thread thread([&]() {
+      port.wake();
+    });
+
+    do {
+      delay();
+    } while (!port.poll());
+  }
 }
 
 int exitCodeForSignal = 0;
@@ -707,7 +753,7 @@ struct TestChild {
       sigset_t sigs;
       sigemptyset(&sigs);
       sigaddset(&sigs, SIGTERM);
-      sigprocmask(SIG_UNBLOCK, &sigs, nullptr);
+      pthread_sigmask(SIG_UNBLOCK, &sigs, nullptr);
 
       for (;;) pause();
     }
@@ -740,8 +786,8 @@ TEST(AsyncUnixTest, ChildProcess) {
   sigset_t sigs, oldsigs;
   KJ_SYSCALL(sigemptyset(&sigs));
   KJ_SYSCALL(sigaddset(&sigs, SIGTERM));
-  KJ_SYSCALL(sigprocmask(SIG_BLOCK, &sigs, &oldsigs));
-  KJ_DEFER(KJ_SYSCALL(sigprocmask(SIG_SETMASK, &oldsigs, nullptr)) { break; });
+  KJ_SYSCALL(pthread_sigmask(SIG_BLOCK, &sigs, &oldsigs));
+  KJ_DEFER(KJ_SYSCALL(pthread_sigmask(SIG_SETMASK, &oldsigs, nullptr)) { break; });
 
   TestChild child1(port, 123);
   KJ_EXPECT(!child1.promise.poll(waitScope));
@@ -773,6 +819,146 @@ TEST(AsyncUnixTest, ChildProcess) {
 
   // child3 will be killed and synchronously waited on the way out.
 }
+
+#if !__CYGWIN__
+// TODO(someday): Figure out why whenWriteDisconnected() never resolves on Cygwin.
+
+KJ_TEST("UnixEventPort whenWriteDisconnected()") {
+  captureSignals();
+  UnixEventPort port;
+  EventLoop loop(port);
+  WaitScope waitScope(loop);
+
+  int fds_[2];
+  KJ_SYSCALL(socketpair(AF_UNIX, SOCK_STREAM, 0, fds_));
+  kj::AutoCloseFd fds[2] = { kj::AutoCloseFd(fds_[0]), kj::AutoCloseFd(fds_[1]) };
+
+  UnixEventPort::FdObserver observer(port, fds[0], UnixEventPort::FdObserver::OBSERVE_READ);
+
+  // At one point, the poll()-based version of UnixEventPort had a bug where if some other event
+  // had completed previously, whenWriteDisconnected() would stop being watched for. So we watch
+  // for readability as well and check that that goes away first.
+  auto readablePromise = observer.whenBecomesReadable();
+  auto hupPromise = observer.whenWriteDisconnected();
+
+  KJ_EXPECT(!readablePromise.poll(waitScope));
+  KJ_EXPECT(!hupPromise.poll(waitScope));
+
+  KJ_SYSCALL(write(fds[1], "foo", 3));
+
+  KJ_ASSERT(readablePromise.poll(waitScope));
+  readablePromise.wait(waitScope);
+
+  {
+    char junk[16];
+    ssize_t n;
+    KJ_SYSCALL(n = read(fds[0], junk, 16));
+    KJ_EXPECT(n == 3);
+  }
+
+  KJ_EXPECT(!hupPromise.poll(waitScope));
+
+  fds[1] = nullptr;
+  KJ_ASSERT(hupPromise.poll(waitScope));
+  hupPromise.wait(waitScope);
+}
+
+KJ_TEST("UnixEventPort FdObserver(..., flags=0)::whenWriteDisconnected()") {
+  // Verifies that given `0' as a `flags' argument,
+  // FdObserver still observes whenWriteDisconnected().
+  //
+  // This can be useful to watch disconnection on a blocking file descriptor.
+  // See discussion: https://github.com/capnproto/capnproto/issues/924
+
+  captureSignals();
+  UnixEventPort port;
+  EventLoop loop(port);
+  WaitScope waitScope(loop);
+
+  int pipefds[2];
+  KJ_SYSCALL(pipe(pipefds));
+  kj::AutoCloseFd infd(pipefds[0]), outfd(pipefds[1]);
+
+  UnixEventPort::FdObserver observer(port, outfd, 0);
+
+  auto hupPromise = observer.whenWriteDisconnected();
+
+  KJ_EXPECT(!hupPromise.poll(waitScope));
+
+  infd = nullptr;
+  KJ_ASSERT(hupPromise.poll(waitScope));
+  hupPromise.wait(waitScope);
+}
+
+#endif
+
+KJ_TEST("UnixEventPort poll for signals") {
+  captureSignals();
+  UnixEventPort port;
+  EventLoop loop(port);
+  WaitScope waitScope(loop);
+
+  auto promise1 = port.onSignal(SIGURG);
+  auto promise2 = port.onSignal(SIGIO);
+
+  KJ_EXPECT(!promise1.poll(waitScope));
+  KJ_EXPECT(!promise2.poll(waitScope));
+
+  KJ_SYSCALL(raise(SIGURG));
+  KJ_SYSCALL(raise(SIGIO));
+  port.wake();
+
+  KJ_EXPECT(port.poll());
+  KJ_EXPECT(promise1.poll(waitScope));
+  KJ_EXPECT(promise2.poll(waitScope));
+
+  promise1.wait(waitScope);
+  promise2.wait(waitScope);
+}
+
+#if defined(SIGRTMIN) && !__CYGWIN__
+// TODO(someday): Figure out why RT signals don't seem to work correctly on Cygwin. It looks like
+//   only the first signal is delivered, like how non-RT signals work. Is it possible Cygwin
+//   advertites RT signal support but doesn't actually implement them correctly? I can't find any
+//   information on the internet about this and TBH I don't care about Cygwin enough to dig in.
+
+void testRtSignals(UnixEventPort& port, WaitScope& waitScope, bool doPoll) {
+  union sigval value;
+  memset(&value, 0, sizeof(value));
+
+  // Queue three copies of the signal upfront.
+  for (uint i = 0; i < 3; i++) {
+    value.sival_int = 123 + i;
+    KJ_SYSCALL(sigqueue(getpid(), SIGRTMIN, value));
+  }
+
+  // Now wait for them.
+  for (uint i = 0; i < 3; i++) {
+    auto promise = port.onSignal(SIGRTMIN);
+    if (doPoll) {
+      KJ_ASSERT(promise.poll(waitScope));
+    }
+    auto info = promise.wait(waitScope);
+    KJ_EXPECT(info.si_value.sival_int == 123 + i);
+  }
+
+  KJ_EXPECT(!port.onSignal(SIGRTMIN).poll(waitScope));
+}
+
+KJ_TEST("UnixEventPort can receive multiple queued instances of an RT signal") {
+  captureSignals();
+  UnixEventPort port;
+  EventLoop loop(port);
+  WaitScope waitScope(loop);
+
+  testRtSignals(port, waitScope, true);
+
+  // Test again, but don't poll() the promises. This may test a different code path, if poll() and
+  // wait() are very different in how they read signals. (For the poll(2)-based implementation of
+  // UnixEventPort, they are indeed pretty different.)
+  testRtSignals(port, waitScope, false);
+}
+#endif
 
 }  // namespace
 }  // namespace kj

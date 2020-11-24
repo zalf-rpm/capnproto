@@ -40,7 +40,7 @@
 #include <sys/wait.h>
 #endif
 
-#if _MSC_VER
+#if _MSC_VER && !defined(__clang__)
 #pragma warning(disable: 4996)
 // Warns that sprintf() is buffer-overrunny. Yeah, I know, it's cool.
 #endif
@@ -322,7 +322,7 @@ TEST(Debug, Catch) {
     // Catch as std::exception.
     try {
       line = __LINE__; KJ_FAIL_ASSERT("foo");
-      ADD_FAILURE() << "Expected exception.";
+      KJ_KNOWN_UNREACHABLE(ADD_FAILURE() << "Expected exception.");
     } catch (const std::exception& e) {
       kj::StringPtr what = e.what();
       std::string text;

@@ -106,17 +106,15 @@
 
 #pragma once
 
-#if defined(__GNUC__) && !KJ_HEADER_WARNINGS
-#pragma GCC system_header
-#endif
-
 #include "string.h"
 #include "exception.h"
 #include "windows-sanity.h"  // work-around macro conflict with `ERROR`
 
+KJ_BEGIN_HEADER
+
 namespace kj {
 
-#if _MSC_VER
+#if _MSC_VER && !defined(__clang__)
 // MSVC does __VA_ARGS__ differently from GCC:
 // - A trailing comma before an empty __VA_ARGS__ is removed automatically, whereas GCC wants
 //   you to request this behavior with "##__VA_ARGS__".
@@ -161,7 +159,7 @@ namespace kj {
   for (::kj::_::Debug::Fault f(__FILE__, __LINE__, \
            errorNumber, code, "" #__VA_ARGS__, __VA_ARGS__);; f.fatal())
 
-#if _WIN32
+#if _WIN32 || __CYGWIN__
 
 #define KJ_WIN32(call, ...) \
   if (auto _kjWin32Result = ::kj::_::Debug::win32Call(call)) {} else \
@@ -241,7 +239,7 @@ namespace kj {
   for (::kj::_::Debug::Fault f(__FILE__, __LINE__, \
            errorNumber, code, #__VA_ARGS__, ##__VA_ARGS__);; f.fatal())
 
-#if _WIN32
+#if _WIN32 || __CYGWIN__
 
 #define KJ_WIN32(call, ...) \
   if (auto _kjWin32Result = ::kj::_::Debug::win32Call(call)) {} else \
@@ -311,7 +309,7 @@ namespace kj {
 //       handleSuccessCase();
 //     }
 
-#if _WIN32
+#if _WIN32 || __CYGWIN__
 
 #define KJ_WIN32_HANDLE_ERRORS(call) \
   if (uint _kjWin32Error = ::kj::_::Debug::win32Call(call).number) \
@@ -358,7 +356,7 @@ public:
 
   typedef LogSeverity Severity;  // backwards-compatibility
 
-#if _WIN32
+#if _WIN32 || __CYGWIN__
   struct Win32Result {
     uint number;
     inline explicit Win32Result(uint number): number(number) {}
@@ -387,7 +385,7 @@ public:
           const char* condition, const char* macroArgs);
     Fault(const char* file, int line, int osErrorNumber,
           const char* condition, const char* macroArgs);
-#if _WIN32
+#if _WIN32 || __CYGWIN__
     Fault(const char* file, int line, Win32Result osErrorNumber,
           const char* condition, const char* macroArgs);
 #endif
@@ -401,7 +399,7 @@ public:
               const char* condition, const char* macroArgs, ArrayPtr<String> argValues);
     void init(const char* file, int line, int osErrorNumber,
               const char* condition, const char* macroArgs, ArrayPtr<String> argValues);
-#if _WIN32
+#if _WIN32 || __CYGWIN__
     void init(const char* file, int line, Win32Result osErrorNumber,
               const char* condition, const char* macroArgs, ArrayPtr<String> argValues);
 #endif
@@ -424,7 +422,7 @@ public:
   template <typename Call>
   static int syscallError(Call&& call, bool nonblocking);
 
-#if _WIN32
+#if _WIN32 || __CYGWIN__
   static Win32Result win32Call(int boolean);
   static Win32Result win32Call(void* handle);
   static Win32Result winsockCall(int result);
@@ -520,7 +518,7 @@ inline Debug::Fault::Fault(const char* file, int line, kj::Exception::Type type,
   init(file, line, type, condition, macroArgs, nullptr);
 }
 
-#if _WIN32
+#if _WIN32 || __CYGWIN__
 inline Debug::Fault::Fault(const char* file, int line, Win32Result osErrorNumber,
                            const char* condition, const char* macroArgs)
     : exception(nullptr) {
@@ -581,3 +579,5 @@ inline String Debug::makeDescription<>(const char* macroArgs) {
 
 }  // namespace _ (private)
 }  // namespace kj
+
+KJ_END_HEADER

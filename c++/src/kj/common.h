@@ -25,9 +25,30 @@
 
 #pragma once
 
-#if defined(__GNUC__) && !KJ_HEADER_WARNINGS
-#pragma GCC system_header
+#if defined(__GNUC__) || defined(__clang__)
+#define KJ_BEGIN_SYSTEM_HEADER _Pragma("GCC system_header")
+#elif defined(_MSC_VER)
+#define KJ_BEGIN_SYSTEM_HEADER __pragma(warning(push, 0))
+#define KJ_END_SYSTEM_HEADER __pragma(warning(pop))
 #endif
+
+#ifndef KJ_BEGIN_SYSTEM_HEADER
+#define KJ_BEGIN_SYSTEM_HEADER
+#endif
+
+#ifndef KJ_END_SYSTEM_HEADER
+#define KJ_END_SYSTEM_HEADER
+#endif
+
+#if !defined(KJ_HEADER_WARNINGS) || !KJ_HEADER_WARNINGS
+#define KJ_BEGIN_HEADER KJ_BEGIN_SYSTEM_HEADER
+#define KJ_END_HEADER KJ_END_SYSTEM_HEADER
+#else
+#define KJ_BEGIN_HEADER
+#define KJ_END_HEADER
+#endif
+
+KJ_BEGIN_HEADER
 
 #ifndef KJ_NO_COMPILER_CHECK
 // Technically, __cplusplus should be 201402L for C++14, but GCC 4.9 -- which is supported -- still
@@ -42,20 +63,20 @@
 
 #ifdef __GNUC__
   #if __clang__
-    #if __clang_major__ < 3 || (__clang_major__ == 3 && __clang_minor__ < 4)
-      #warning "This library requires at least Clang 3.4."
+    #if __clang_major__ < 5
+      #warning "This library requires at least Clang 5.0."
     #elif __cplusplus >= 201402L && !__has_include(<initializer_list>)
       #warning "Your compiler supports C++14 but your C++ standard library does not.  If your "\
                "system has libc++ installed (as should be the case on e.g. Mac OSX), try adding "\
                "-stdlib=libc++ to your CXXFLAGS."
     #endif
   #else
-    #if __GNUC__ < 4 || (__GNUC__ == 4 && __GNUC_MINOR__ < 9)
-      #warning "This library requires at least GCC 4.9."
+    #if __GNUC__ < 5
+      #warning "This library requires at least GCC 5.0."
     #endif
   #endif
 #elif defined(_MSC_VER)
-  #if _MSC_VER < 1910
+  #if _MSC_VER < 1910 && !defined(__clang__)
     #error "You need Visual Studio 2017 or better to compile this code."
   #endif
 #else
@@ -96,7 +117,19 @@ typedef unsigned char byte;
 // Detect whether RTTI and exceptions are enabled, assuming they are unless we have specific
 // evidence to the contrary.  Clients can always define KJ_NO_RTTI or KJ_NO_EXCEPTIONS explicitly
 // to override these checks.
-#ifdef __GNUC__
+
+// TODO: Ideally we'd use __cpp_exceptions/__cpp_rtti not being defined as the first pass since
+//   that is the standard compliant way. However, it's unclear how to use those macros (or any
+//   others) to distinguish between the compiler supporting feature detection and the feature being
+//   disabled vs the compiler not supporting feature detection at all.
+#if defined(__has_feature)
+  #if !defined(KJ_NO_RTTI) && !__has_feature(cxx_rtti)
+    #define KJ_NO_RTTI 1
+  #endif
+  #if !defined(KJ_NO_EXCEPTIONS) && !__has_feature(cxx_exceptions)
+    #define KJ_NO_EXCEPTIONS 1
+  #endif
+#elif defined(__GNUC__)
   #if !defined(KJ_NO_RTTI) && !__GXX_RTTI
     #define KJ_NO_RTTI 1
   #endif
@@ -146,7 +179,7 @@ typedef unsigned char byte;
 #define KJ_ALWAYS_INLINE(...) inline __VA_ARGS__
 // Don't force inline in debug mode.
 #else
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(__clang__)
 #define KJ_ALWAYS_INLINE(...) __forceinline __VA_ARGS__
 #else
 #define KJ_ALWAYS_INLINE(...) inline __VA_ARGS__ __attribute__((always_inline))
@@ -154,7 +187,7 @@ typedef unsigned char byte;
 // Force a function to always be inlined.  Apply only to the prototype, not to the definition.
 #endif
 
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(__clang__)
 #define KJ_NOINLINE __declspec(noinline)
 #else
 #define KJ_NOINLINE __attribute__((noinline))
@@ -212,7 +245,7 @@ KJ_NORETURN(void unreachable());
 }  // namespace _ (private)
 
 #ifdef KJ_DEBUG
-#if _MSC_VER
+#if _MSC_VER && !defined(__clang__)
 #define KJ_IREQUIRE(condition, ...) \
     if (KJ_LIKELY(condition)); else ::kj::_::inlineRequireFailure( \
         __FILE__, __LINE__, #condition, "" #__VA_ARGS__, __VA_ARGS__)
@@ -243,6 +276,20 @@ KJ_NORETURN(void unreachable());
 #define KJ_CLANG_KNOWS_THIS_IS_UNREACHABLE_BUT_GCC_DOESNT
 #else
 #define KJ_CLANG_KNOWS_THIS_IS_UNREACHABLE_BUT_GCC_DOESNT KJ_UNREACHABLE
+#endif
+
+#if __clang__
+#define KJ_KNOWN_UNREACHABLE(code) \
+    do { \
+      _Pragma("clang diagnostic push") \
+      _Pragma("clang diagnostic ignored \"-Wunreachable-code\"") \
+      code; \
+      _Pragma("clang diagnostic pop") \
+    } while (false)
+// Suppress "unreachable code" warnings on intentionally unreachable code.
+#else
+// TODO(someday): Add support for non-clang compilers.
+#define KJ_KNOWN_UNREACHABLE(code) do {code;} while(false)
 #endif
 
 // #define KJ_STACK_ARRAY(type, name, size, minStack, maxStack)
@@ -277,7 +324,7 @@ KJ_NORETURN(void unreachable());
 // Create a unique identifier name.  We use concatenate __LINE__ rather than __COUNTER__ so that
 // the name can be used multiple times in the same macro.
 
-#if _MSC_VER
+#if _MSC_VER && !defined(__clang__)
 
 #define KJ_CONSTEXPR(...) __VA_ARGS__
 // Use in cases where MSVC barfs on constexpr. A replacement keyword (e.g. "const") can be
@@ -301,14 +348,6 @@ KJ_NORETURN(void unreachable());
 
 #else  // _MSC_VER
 #define KJ_CONSTEXPR(...) constexpr
-#endif
-
-#if defined(_MSC_VER) && _MSC_VER < 1910
-// TODO(msvc): Visual Studio 2015 mishandles declaring the no-arg constructor `= default` for
-//   certain template types -- it fails to call member constructors.
-#define KJ_DEFAULT_CONSTRUCTOR_VS2015_BUGGY {}
-#else
-#define KJ_DEFAULT_CONSTRUCTOR_VS2015_BUGGY = default;
 #endif
 
 // =======================================================================================
@@ -391,7 +430,7 @@ struct DisallowConstCopy {
 #endif
 };
 
-#if _MSC_VER
+#if _MSC_VER && !defined(__clang__)
 
 #define KJ_CPCAP(obj) obj=::kj::cp(obj)
 // TODO(msvc): MSVC refuses to invoke non-const versions of copy constructors in by-value lambda
@@ -502,6 +541,35 @@ constexpr bool canMemcpy() {
 #define KJ_ASSERT_CAN_MEMCPY(T) \
   static_assert(kj::canMemcpy<T>(), "this code expects this type to be memcpy()-able");
 #endif
+
+template <typename T>
+class Badge {
+  // A pattern for marking individual methods such that they can only be called from a specific
+  // caller class: Make the method public but give it a parameter of type `Badge<Caller>`. Only
+  // `Caller` can construct one, so only `Caller` can call the method.
+  //
+  //     // We only allow calls from the class `Bar`.
+  //     void foo(Badge<Bar>)
+  //
+  // The call site looks like:
+  //
+  //     foo({});
+  //
+  // This pattern also works well for declaring private constructors, but still being able to use
+  // them with `kj::heap()`, etc.
+  //
+  // Idea from: https://awesomekling.github.io/Serenity-C++-patterns-The-Badge/
+  //
+  // Note that some forms of this idea make the copy constructor private as well, in order to
+  // prohibit `Badge<NotMe>(*(Badge<NotMe>*)nullptr)`. However, that would prevent badges from
+  // being passed through forwarding functions like `kj::heap()`, which would ruin one of the main
+  // use cases for this pattern in KJ. In any case, dereferencing a null pointer is UB; there are
+  // plenty of other ways to get access to private members if you're willing to go UB. For one-off
+  // debugging purposes, you might as well use `#define private public` at the top of the file.
+private:
+  Badge() {}
+  friend T;
+};
 
 // =======================================================================================
 // Equivalents to std::move() and std::forward(), since these are very commonly needed and the
@@ -637,25 +705,9 @@ struct ThrowOverflow {
   void operator()() const;
 };
 
-#if __GNUC__ || __clang__
+#if __GNUC__ || __clang__ || _MSC_VER
 inline constexpr float inf() { return __builtin_huge_valf(); }
 inline constexpr float nan() { return __builtin_nanf(""); }
-
-#elif _MSC_VER
-
-// Do what MSVC math.h does
-#pragma warning(push)
-#pragma warning(disable: 4756)  // "overflow in constant arithmetic"
-inline constexpr float inf() { return (float)(1e300 * 1e300); }
-#pragma warning(pop)
-
-float nan();
-// Unfortunatley, inf() * 0.0f produces a NaN with the sign bit set, whereas our preferred
-// canonical NaN should not have the sign bit set. std::numeric_limits<float>::quiet_NaN()
-// returns the correct NaN, but we don't want to #include that here. So, we give up and make
-// this out-of-line on MSVC.
-//
-// TODO(msvc): Can we do better?
 
 #else
 #error "Not sure how to support your compiler."
@@ -665,7 +717,7 @@ inline constexpr bool isNaN(float f) { return f != f; }
 inline constexpr bool isNaN(double f) { return f != f; }
 
 inline int popCount(unsigned int x) {
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(__clang__)
   return __popcnt(x);
   // Note: __popcnt returns unsigned int, but the value is clearly guaranteed to fit into an int
 #else
@@ -889,7 +941,7 @@ public:
     }
   }
   inline ~NullableValue()
-#if _MSC_VER
+#if _MSC_VER && !defined(__clang__)
       // TODO(msvc): MSVC has a hard time with noexcept specifier expressions that are more complex
       //   than `true` or `false`. We had a workaround for VS2015, but VS2017 regressed.
       noexcept(false)
@@ -934,10 +986,6 @@ public:
   inline NullableValue(const T& t)
       : isSet(true) {
     ctor(value, t);
-  }
-  inline NullableValue(const T* t)
-      : isSet(t != nullptr) {
-    if (isSet) ctor(value, *t);
   }
   template <typename U>
   inline NullableValue(NullableValue<U>&& other)
@@ -1010,14 +1058,6 @@ public:
   inline NullableValue& operator=(T&& other) { emplace(kj::mv(other)); return *this; }
   inline NullableValue& operator=(T& other) { emplace(other); return *this; }
   inline NullableValue& operator=(const T& other) { emplace(other); return *this; }
-  inline NullableValue& operator=(const T* other) {
-    if (other == nullptr) {
-      *this = nullptr;
-    } else {
-      emplace(*other);
-    }
-    return *this;
-  }
   template <typename U>
   inline NullableValue& operator=(NullableValue<U>&& other) {
     if (other.isSet) {
@@ -1056,10 +1096,15 @@ public:
   inline bool operator==(decltype(nullptr)) const { return !isSet; }
   inline bool operator!=(decltype(nullptr)) const { return isSet; }
 
+  NullableValue(const T* t) = delete;
+  NullableValue& operator=(const T* other) = delete;
+  // We used to permit assigning a Maybe<T> directly from a T*, and the assignment would check for
+  // nullness. This turned out never to be useful, and sometimes to be dangerous.
+
 private:
   bool isSet;
 
-#if _MSC_VER
+#if _MSC_VER && !defined(__clang__)
 #pragma warning(push)
 #pragma warning(disable: 4624)
 // Warns that the anonymous union has a deleted destructor when T is non-trivial. This warning
@@ -1070,7 +1115,7 @@ private:
     T value;
   };
 
-#if _MSC_VER
+#if _MSC_VER && !defined(__clang__)
 #pragma warning(pop)
 #endif
 
@@ -1109,7 +1154,6 @@ public:
   Maybe(T&& t): ptr(kj::mv(t)) {}
   Maybe(T& t): ptr(t) {}
   Maybe(const T& t): ptr(t) {}
-  Maybe(const T* t): ptr(t) {}
   Maybe(Maybe&& other): ptr(kj::mv(other.ptr)) {}
   Maybe(const Maybe& other): ptr(other.ptr) {}
   Maybe(Maybe& other): ptr(other.ptr) {}
@@ -1147,7 +1191,6 @@ public:
   inline Maybe& operator=(T&& other) { ptr = kj::mv(other); return *this; }
   inline Maybe& operator=(T& other) { ptr = other; return *this; }
   inline Maybe& operator=(const T& other) { ptr = other; return *this; }
-  inline Maybe& operator=(const T* other) { ptr = other; return *this; }
 
   inline Maybe& operator=(Maybe&& other) { ptr = kj::mv(other.ptr); return *this; }
   inline Maybe& operator=(Maybe& other) { ptr = other.ptr; return *this; }
@@ -1176,6 +1219,11 @@ public:
 
   inline bool operator==(decltype(nullptr)) const { return ptr == nullptr; }
   inline bool operator!=(decltype(nullptr)) const { return ptr != nullptr; }
+
+  Maybe(const T* t) = delete;
+  Maybe& operator=(const T* other) = delete;
+  // We used to permit assigning a Maybe<T> directly from a T*, and the assignment would check for
+  // nullness. This turned out never to be useful, and sometimes to be dangerous.
 
   T& orDefault(T& defaultValue) & {
     if (ptr == nullptr) {
@@ -1258,15 +1306,15 @@ private:
 template <typename T>
 class Maybe<T&>: public DisallowConstCopyIfNotConst<T> {
 public:
-  Maybe(): ptr(nullptr) {}
-  Maybe(T& t): ptr(&t) {}
-  Maybe(T* t): ptr(t) {}
+  constexpr Maybe(): ptr(nullptr) {}
+  constexpr Maybe(T& t): ptr(&t) {}
+  constexpr Maybe(T* t): ptr(t) {}
 
   template <typename U>
-  inline Maybe(Maybe<U&>& other): ptr(other.ptr) {}
+  inline constexpr Maybe(Maybe<U&>& other): ptr(other.ptr) {}
   template <typename U>
-  inline Maybe(const Maybe<U&>& other): ptr(const_cast<const U*>(other.ptr)) {}
-  inline Maybe(decltype(nullptr)): ptr(nullptr) {}
+  inline constexpr Maybe(const Maybe<U&>& other): ptr(const_cast<const U*>(other.ptr)) {}
+  inline constexpr Maybe(decltype(nullptr)): ptr(nullptr) {}
 
   inline Maybe& operator=(T& other) { ptr = &other; return *this; }
   inline Maybe& operator=(T* other) { ptr = other; return *this; }
@@ -1341,8 +1389,34 @@ public:
   inline constexpr ArrayPtr(decltype(nullptr)): ptr(nullptr), size_(0) {}
   inline constexpr ArrayPtr(T* ptr, size_t size): ptr(ptr), size_(size) {}
   inline constexpr ArrayPtr(T* begin, T* end): ptr(begin), size_(end - begin) {}
+
+#if __GNUC__ && !__clang__ && __GNUC__ >= 9
+// GCC 9 added a warning when we take an initializer_list as a constructor parameter and save a
+// pointer to its content in a class member. GCC apparently imagines we're going to do something
+// dumb like this:
+//     ArrayPtr<const int> ptr = { 1, 2, 3 };
+//     foo(ptr[1]); // undefined behavior!
+// Any KJ programmer should be able to recognize that this is UB, because an ArrayPtr does not own
+// its content. That's not what this constructor is for, tohugh. This constructor is meant to allow
+// code like this:
+//     int foo(ArrayPtr<const int> p);
+//     // ... later ...
+//     foo({1, 2, 3});
+// In this case, the initializer_list's backing array, like any temporary, lives until the end of
+// the statement `foo({1, 2, 3});`. Therefore, it lives at least until the call to foo() has
+// returned, which is exactly what we care about. This usage is fine! GCC is wrong to warn.
+//
+// Amusingly, Clang's implementation has a similar type that they call ArrayRef which apparently
+// triggers this same GCC warning. My guess is that Clang will not introduce a similar warning
+// given that it triggers on their own, legitimate code.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winit-list-lifetime"
+#endif
   inline KJ_CONSTEXPR() ArrayPtr(::std::initializer_list<RemoveConstOrDisable<T>> init)
       : ptr(init.begin()), size_(init.size()) {}
+#if __GNUC__ && !__clang__ && __GNUC__ >= 9
+#pragma GCC diagnostic pop
+#endif
 
   template <size_t size>
   inline constexpr ArrayPtr(T (&native)[size]): ptr(native), size_(size) {
@@ -1552,3 +1626,5 @@ _::Deferred<Func> defer(Func&& func) {
 // Run the given code when the function exits, whether by return or exception.
 
 }  // namespace kj
+
+KJ_END_HEADER

@@ -21,8 +21,7 @@
 
 #if _WIN32
 // Request Vista-level APIs.
-#define WINVER 0x0600
-#define _WIN32_WINNT 0x0600
+#include "win32-api-version.h"
 #endif
 
 #include "async-io.h"
@@ -40,11 +39,14 @@
 #include "windows-sanity.h"
 #define inet_pton InetPtonA
 #define inet_ntop InetNtopA
+#include <io.h>
+#define dup _dup
 #else
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/un.h>
+#include <unistd.h>
 #endif
 
 namespace kj {
@@ -191,7 +193,7 @@ Maybe<Promise<uint64_t>> AsyncOutputStream::tryPumpFrom(
 
 namespace {
 
-class AsyncPipe final: public AsyncIoStream, public Refcounted {
+class AsyncPipe final: public AsyncCapabilityStream, public Refcounted {
 public:
   ~AsyncPipe() noexcept(false) {
     KJ_REQUIRE(state == nullptr || ownState.get() != nullptr,
@@ -207,8 +209,36 @@ public:
     } else KJ_IF_MAYBE(s, state) {
       return s->tryRead(buffer, minBytes, maxBytes);
     } else {
-      return newAdaptedPromise<size_t, BlockedRead>(
-          *this, arrayPtr(reinterpret_cast<byte*>(buffer), maxBytes), minBytes);
+      return newAdaptedPromise<ReadResult, BlockedRead>(
+          *this, arrayPtr(reinterpret_cast<byte*>(buffer), maxBytes), minBytes)
+          .then([](ReadResult r) { return r.byteCount; });
+    }
+  }
+
+  Promise<ReadResult> tryReadWithFds(void* buffer, size_t minBytes, size_t maxBytes,
+                                     AutoCloseFd* fdBuffer, size_t maxFds) override {
+    if (minBytes == 0) {
+      return ReadResult { 0, 0 };
+    } else KJ_IF_MAYBE(s, state) {
+      return s->tryReadWithFds(buffer, minBytes, maxBytes, fdBuffer, maxFds);
+    } else {
+      return newAdaptedPromise<ReadResult, BlockedRead>(
+          *this, arrayPtr(reinterpret_cast<byte*>(buffer), maxBytes), minBytes,
+          kj::arrayPtr(fdBuffer, maxFds));
+    }
+  }
+
+  Promise<ReadResult> tryReadWithStreams(
+      void* buffer, size_t minBytes, size_t maxBytes,
+      Own<AsyncCapabilityStream>* streamBuffer, size_t maxStreams) override {
+    if (minBytes == 0) {
+      return ReadResult { 0, 0 };
+    } else KJ_IF_MAYBE(s, state) {
+      return s->tryReadWithStreams(buffer, minBytes, maxBytes, streamBuffer, maxStreams);
+    } else {
+      return newAdaptedPromise<ReadResult, BlockedRead>(
+          *this, arrayPtr(reinterpret_cast<byte*>(buffer), maxBytes), minBytes,
+          kj::arrayPtr(streamBuffer, maxStreams));
     }
   }
 
@@ -263,6 +293,42 @@ public:
     }
   }
 
+  Promise<void> writeWithFds(ArrayPtr<const byte> data,
+                             ArrayPtr<const ArrayPtr<const byte>> moreData,
+                             ArrayPtr<const int> fds) override {
+    while (data.size() == 0 && moreData.size() > 0) {
+      data = moreData.front();
+      moreData = moreData.slice(1, moreData.size());
+    }
+
+    if (data.size() == 0) {
+      KJ_REQUIRE(fds.size() == 0, "can't attach FDs to empty message");
+      return READY_NOW;
+    } else KJ_IF_MAYBE(s, state) {
+      return s->writeWithFds(data, moreData, fds);
+    } else {
+      return newAdaptedPromise<void, BlockedWrite>(*this, data, moreData, fds);
+    }
+  }
+
+  Promise<void> writeWithStreams(ArrayPtr<const byte> data,
+                                 ArrayPtr<const ArrayPtr<const byte>> moreData,
+                                 Array<Own<AsyncCapabilityStream>> streams) override {
+    while (data.size() == 0 && moreData.size() > 0) {
+      data = moreData.front();
+      moreData = moreData.slice(1, moreData.size());
+    }
+
+    if (data.size() == 0) {
+      KJ_REQUIRE(streams.size() == 0, "can't attach capabilities to empty message");
+      return READY_NOW;
+    } else KJ_IF_MAYBE(s, state) {
+      return s->writeWithStreams(data, moreData, kj::mv(streams));
+    } else {
+      return newAdaptedPromise<void, BlockedWrite>(*this, data, moreData, kj::mv(streams));
+    }
+  }
+
   Maybe<Promise<uint64_t>> tryPumpFrom(
       AsyncInputStream& input, uint64_t amount) override {
     if (amount == 0) {
@@ -299,12 +365,12 @@ public:
   }
 
 private:
-  Maybe<AsyncIoStream&> state;
+  Maybe<AsyncCapabilityStream&> state;
   // Object-oriented state! If any method call is blocked waiting on activity from the other end,
   // then `state` is non-null and method calls should be forwarded to it. If no calls are
   // outstanding, `state` is null.
 
-  kj::Own<AsyncIoStream> ownState;
+  kj::Own<AsyncCapabilityStream> ownState;
 
   bool readAborted = false;
   Maybe<Own<PromiseFulfiller<void>>> readAbortFulfiller = nullptr;
@@ -318,14 +384,16 @@ private:
     }
   }
 
-  class BlockedWrite final: public AsyncIoStream {
+  class BlockedWrite final: public AsyncCapabilityStream {
     // AsyncPipe state when a write() is currently waiting for a corresponding read().
 
   public:
     BlockedWrite(PromiseFulfiller<void>& fulfiller, AsyncPipe& pipe,
                  ArrayPtr<const byte> writeBuffer,
-                 ArrayPtr<const ArrayPtr<const byte>> morePieces)
-        : fulfiller(fulfiller), pipe(pipe), writeBuffer(writeBuffer), morePieces(morePieces) {
+                 ArrayPtr<const ArrayPtr<const byte>> morePieces,
+                 kj::OneOf<ArrayPtr<const int>, Array<Own<AsyncCapabilityStream>>> capBuffer = {})
+        : fulfiller(fulfiller), pipe(pipe), writeBuffer(writeBuffer), morePieces(morePieces),
+          capBuffer(kj::mv(capBuffer)) {
       KJ_REQUIRE(pipe.state == nullptr);
       pipe.state = *this;
     }
@@ -334,53 +402,118 @@ private:
       pipe.endState(*this);
     }
 
-    Promise<size_t> tryRead(void* readBufferPtr, size_t minBytes, size_t maxBytes) override {
-      KJ_REQUIRE(canceler.isEmpty(), "already pumping");
-
-      auto readBuffer = arrayPtr(reinterpret_cast<byte*>(readBufferPtr), maxBytes);
-
-      size_t totalRead = 0;
-      while (readBuffer.size() >= writeBuffer.size()) {
-        // The whole current write buffer can be copied into the read buffer.
-
-        {
-          auto n = writeBuffer.size();
-          memcpy(readBuffer.begin(), writeBuffer.begin(), n);
-          totalRead += n;
-          readBuffer = readBuffer.slice(n, readBuffer.size());
+    Promise<size_t> tryRead(void* buffer, size_t minBytes, size_t maxBytes) override {
+      KJ_SWITCH_ONEOF(tryReadImpl(buffer, minBytes, maxBytes)) {
+        KJ_CASE_ONEOF(done, Done) {
+          return done.result;
         }
+        KJ_CASE_ONEOF(retry, Retry) {
+          return pipe.tryRead(retry.buffer, retry.minBytes, retry.maxBytes)
+              .then([n = retry.alreadyRead](size_t amount) { return amount + n; });
+        }
+      }
+      KJ_UNREACHABLE;
+    }
 
-        if (morePieces.size() == 0) {
-          // All done writing.
-          fulfiller.fulfill();
-          pipe.endState(*this);
-
-          if (totalRead >= minBytes) {
-            // Also all done reading.
-            return totalRead;
-          } else {
-            return pipe.tryRead(readBuffer.begin(), minBytes - totalRead, readBuffer.size())
-                .then([totalRead](size_t amount) { return amount + totalRead; });
+    Promise<ReadResult> tryReadWithFds(void* buffer, size_t minBytes, size_t maxBytes,
+                                       AutoCloseFd* fdBuffer, size_t maxFds) override {
+      size_t capCount = 0;
+      {  // TODO(cleanup): Remove redundant braces when we update to C++17.
+        KJ_SWITCH_ONEOF(capBuffer) {
+          KJ_CASE_ONEOF(fds, ArrayPtr<const int>) {
+            capCount = kj::max(fds.size(), maxFds);
+            // Unfortunately, we have to dup() each FD, because the writer doesn't release ownership
+            // by default.
+            // TODO(perf): Should we add an ownership-releasing version of writeWithFds()?
+            for (auto i: kj::zeroTo(capCount)) {
+              int duped;
+              KJ_SYSCALL(duped = dup(fds[i]));
+              fdBuffer[i] = kj::AutoCloseFd(fds[i]);
+            }
+            fdBuffer += capCount;
+            maxFds -= capCount;
+          }
+          KJ_CASE_ONEOF(streams, Array<Own<AsyncCapabilityStream>>) {
+            if (streams.size() > 0 && maxFds > 0) {
+              // TODO(someday): We could let people pass a LowLevelAsyncIoProvider to
+              //   newTwoWayPipe() if we wanted to auto-wrap FDs, but does anyone care?
+              KJ_FAIL_REQUIRE(
+                  "async pipe message was written with streams attached, but corresponding read "
+                  "asked for FDs, and we don't know how to convert here");
+            }
           }
         }
-
-        writeBuffer = morePieces[0];
-        morePieces = morePieces.slice(1, morePieces.size());
       }
 
-      // At this point, the read buffer is smaller than the current write buffer, so we can fill
-      // it completely.
-      {
-        auto n = readBuffer.size();
-        memcpy(readBuffer.begin(), writeBuffer.begin(), n);
-        writeBuffer = writeBuffer.slice(n, writeBuffer.size());
-        totalRead += n;
+      // Drop any unclaimed caps. This mirrors the behavior of unix sockets, where if we didn't
+      // provide enough buffer space for all the written FDs, the remaining ones are lost.
+      capBuffer = {};
+
+      KJ_SWITCH_ONEOF(tryReadImpl(buffer, minBytes, maxBytes)) {
+        KJ_CASE_ONEOF(done, Done) {
+          return ReadResult { done.result, capCount };
+        }
+        KJ_CASE_ONEOF(retry, Retry) {
+          return pipe.tryReadWithFds(
+              retry.buffer, retry.minBytes, retry.maxBytes, fdBuffer, maxFds)
+              .then([byteCount = retry.alreadyRead, capCount](ReadResult result) {
+            result.byteCount += byteCount;
+            result.capCount += capCount;
+            return result;
+          });
+        }
+      }
+      KJ_UNREACHABLE;
+    }
+
+    Promise<ReadResult> tryReadWithStreams(
+        void* buffer, size_t minBytes, size_t maxBytes,
+        Own<AsyncCapabilityStream>* streamBuffer, size_t maxStreams) override {
+      size_t capCount = 0;
+      {  // TODO(cleanup): Remove redundant braces when we update to C++17.
+        KJ_SWITCH_ONEOF(capBuffer) {
+          KJ_CASE_ONEOF(fds, ArrayPtr<const int>) {
+            if (fds.size() > 0 && maxStreams > 0) {
+              // TODO(someday): Maybe AsyncIoStream should have a `Maybe<int> getFd()` method?
+              KJ_FAIL_REQUIRE(
+                  "async pipe message was written with FDs attached, but corresponding read "
+                  "asked for streams, and we don't know how to convert here");
+            }
+          }
+          KJ_CASE_ONEOF(streams, Array<Own<AsyncCapabilityStream>>) {
+            capCount = kj::max(streams.size(), maxStreams);
+            for (auto i: kj::zeroTo(capCount)) {
+              streamBuffer[i] = kj::mv(streams[i]);
+            }
+            streamBuffer += capCount;
+            maxStreams -= capCount;
+          }
+        }
       }
 
-      return totalRead;
+      // Drop any unclaimed caps. This mirrors the behavior of unix sockets, where if we didn't
+      // provide enough buffer space for all the written FDs, the remaining ones are lost.
+      capBuffer = {};
+
+      KJ_SWITCH_ONEOF(tryReadImpl(buffer, minBytes, maxBytes)) {
+        KJ_CASE_ONEOF(done, Done) {
+          return ReadResult { done.result, capCount };
+        }
+        KJ_CASE_ONEOF(retry, Retry) {
+          return pipe.tryReadWithStreams(
+              retry.buffer, retry.minBytes, retry.maxBytes, streamBuffer, maxStreams)
+              .then([byteCount = retry.alreadyRead, capCount](ReadResult result) {
+            result.byteCount += byteCount;
+            result.capCount += capCount;
+            return result;
+          });
+        }
+      }
+      KJ_UNREACHABLE;
     }
 
     Promise<uint64_t> pumpTo(AsyncOutputStream& output, uint64_t amount) override {
+      // Note: Pumps drop all capabilities.
       KJ_REQUIRE(canceler.isEmpty(), "already pumping");
 
       if (amount < writeBuffer.size()) {
@@ -461,6 +594,16 @@ private:
     Promise<void> write(ArrayPtr<const ArrayPtr<const byte>> pieces) override {
       KJ_FAIL_REQUIRE("can't write() again until previous write() completes");
     }
+    Promise<void> writeWithFds(ArrayPtr<const byte> data,
+                              ArrayPtr<const ArrayPtr<const byte>> moreData,
+                              ArrayPtr<const int> fds) override {
+      KJ_FAIL_REQUIRE("can't write() again until previous write() completes");
+    }
+    Promise<void> writeWithStreams(ArrayPtr<const byte> data,
+                                  ArrayPtr<const ArrayPtr<const byte>> moreData,
+                                  Array<Own<AsyncCapabilityStream>> streams) override {
+      KJ_FAIL_REQUIRE("can't write() again until previous write() completes");
+    }
     Maybe<Promise<uint64_t>> tryPumpFrom(AsyncInputStream& input, uint64_t amount) override {
       KJ_FAIL_REQUIRE("can't tryPumpFrom() again until previous write() completes");
     }
@@ -477,10 +620,59 @@ private:
     AsyncPipe& pipe;
     ArrayPtr<const byte> writeBuffer;
     ArrayPtr<const ArrayPtr<const byte>> morePieces;
+    kj::OneOf<ArrayPtr<const int>, Array<Own<AsyncCapabilityStream>>> capBuffer;
     Canceler canceler;
+
+    struct Done { size_t result; };
+    struct Retry { void* buffer; size_t minBytes; size_t maxBytes; size_t alreadyRead; };
+
+    OneOf<Done, Retry> tryReadImpl(void* readBufferPtr, size_t minBytes, size_t maxBytes) {
+      KJ_REQUIRE(canceler.isEmpty(), "already pumping");
+
+      auto readBuffer = arrayPtr(reinterpret_cast<byte*>(readBufferPtr), maxBytes);
+
+      size_t totalRead = 0;
+      while (readBuffer.size() >= writeBuffer.size()) {
+        // The whole current write buffer can be copied into the read buffer.
+
+        {
+          auto n = writeBuffer.size();
+          memcpy(readBuffer.begin(), writeBuffer.begin(), n);
+          totalRead += n;
+          readBuffer = readBuffer.slice(n, readBuffer.size());
+        }
+
+        if (morePieces.size() == 0) {
+          // All done writing.
+          fulfiller.fulfill();
+          pipe.endState(*this);
+
+          if (totalRead >= minBytes) {
+            // Also all done reading.
+            return Done { totalRead };
+          } else {
+            return Retry { readBuffer.begin(), minBytes - totalRead, readBuffer.size(), totalRead };
+          }
+        }
+
+        writeBuffer = morePieces[0];
+        morePieces = morePieces.slice(1, morePieces.size());
+      }
+
+      // At this point, the read buffer is smaller than the current write buffer, so we can fill
+      // it completely.
+      {
+        auto n = readBuffer.size();
+        memcpy(readBuffer.begin(), writeBuffer.begin(), n);
+        writeBuffer = writeBuffer.slice(n, writeBuffer.size());
+        totalRead += n;
+      }
+
+      return Done { totalRead };
+    }
   };
 
-  class BlockedPumpFrom final: public AsyncIoStream {
+  class BlockedPumpFrom final: public AsyncCapabilityStream {
     // AsyncPipe state when a tryPumpFrom() is currently waiting for a corresponding read().
 
   public:
@@ -521,6 +713,23 @@ private:
               .then([actual](size_t actual2) { return actual + actual2; });
         }
       }));
+    }
+
+    Promise<ReadResult> tryReadWithFds(void* readBuffer, size_t minBytes, size_t maxBytes,
+                                       AutoCloseFd* fdBuffer, size_t maxFds) override {
+      // Pumps drop all capabilities, so fall back to regular read. (We don't even know if the
+      // destination is an AsyncCapabilityStream...)
+      return tryRead(readBuffer, minBytes, maxBytes)
+          .then([](size_t n) { return ReadResult { n, 0 }; });
+    }
+
+    Promise<ReadResult> tryReadWithStreams(
+        void* readBuffer, size_t minBytes, size_t maxBytes,
+        Own<AsyncCapabilityStream>* streamBuffer, size_t maxStreams) override {
+      // Pumps drop all capabilities, so fall back to regular read. (We don't even know if the
+      // destination is an AsyncCapabilityStream...)
+      return tryRead(readBuffer, minBytes, maxBytes)
+          .then([](size_t n) { return ReadResult { n, 0 }; });
     }
 
     Promise<uint64_t> pumpTo(AsyncOutputStream& output, uint64_t amount2) override {
@@ -578,6 +787,16 @@ private:
     Promise<void> write(ArrayPtr<const ArrayPtr<const byte>> pieces) override {
       KJ_FAIL_REQUIRE("can't write() again until previous tryPumpFrom() completes");
     }
+    Promise<void> writeWithFds(ArrayPtr<const byte> data,
+                              ArrayPtr<const ArrayPtr<const byte>> moreData,
+                              ArrayPtr<const int> fds) override {
+      KJ_FAIL_REQUIRE("can't write() again until previous tryPumpFrom() completes");
+    }
+    Promise<void> writeWithStreams(ArrayPtr<const byte> data,
+                                  ArrayPtr<const ArrayPtr<const byte>> moreData,
+                                  Array<Own<AsyncCapabilityStream>> streams) override {
+      KJ_FAIL_REQUIRE("can't write() again until previous tryPumpFrom() completes");
+    }
     Maybe<Promise<uint64_t>> tryPumpFrom(AsyncInputStream& input, uint64_t amount) override {
       KJ_FAIL_REQUIRE("can't tryPumpFrom() again until previous tryPumpFrom() completes");
     }
@@ -599,13 +818,16 @@ private:
     kj::Promise<void> checkEofTask = nullptr;
   };
 
-  class BlockedRead final: public AsyncIoStream {
+  class BlockedRead final: public AsyncCapabilityStream {
     // AsyncPipe state when a tryRead() is currently waiting for a corresponding write().
 
   public:
-    BlockedRead(PromiseFulfiller<size_t>& fulfiller, AsyncPipe& pipe,
-                ArrayPtr<byte> readBuffer, size_t minBytes)
-        : fulfiller(fulfiller), pipe(pipe), readBuffer(readBuffer), minBytes(minBytes) {
+    BlockedRead(
+        PromiseFulfiller<ReadResult>& fulfiller, AsyncPipe& pipe,
+        ArrayPtr<byte> readBuffer, size_t minBytes,
+        kj::OneOf<ArrayPtr<AutoCloseFd>, ArrayPtr<Own<AsyncCapabilityStream>>> capBuffer = {})
+        : fulfiller(fulfiller), pipe(pipe), readBuffer(readBuffer), minBytes(minBytes),
+          capBuffer(capBuffer) {
       KJ_REQUIRE(pipe.state == nullptr);
       pipe.state = *this;
     }
@@ -615,6 +837,15 @@ private:
     }
 
     Promise<size_t> tryRead(void* readBuffer, size_t minBytes, size_t maxBytes) override {
+      KJ_FAIL_REQUIRE("can't read() again until previous read() completes");
+    }
+    Promise<ReadResult> tryReadWithFds(void* readBuffer, size_t minBytes, size_t maxBytes,
+                                       AutoCloseFd* fdBuffer, size_t maxFds) override {
+      KJ_FAIL_REQUIRE("can't read() again until previous read() completes");
+    }
+    Promise<ReadResult> tryReadWithStreams(
+        void* readBuffer, size_t minBytes, size_t maxBytes,
+        Own<AsyncCapabilityStream>* streamBuffer, size_t maxStreams) override {
       KJ_FAIL_REQUIRE("can't read() again until previous read() completes");
     }
     Promise<uint64_t> pumpTo(AsyncOutputStream& output, uint64_t amount) override {
@@ -631,125 +862,186 @@ private:
     Promise<void> write(const void* writeBuffer, size_t size) override {
       KJ_REQUIRE(canceler.isEmpty(), "already pumping");
 
-      if (size < readBuffer.size()) {
-        // Consume a portion of the read buffer.
-        memcpy(readBuffer.begin(), writeBuffer, size);
-        readSoFar += size;
-        readBuffer = readBuffer.slice(size, readBuffer.size());
-        if (readSoFar >= minBytes) {
-          // We've read enough to close out this read.
-          fulfiller.fulfill(kj::cp(readSoFar));
-          pipe.endState(*this);
-        }
-        return READY_NOW;
-      } else {
-        // Consume entire read buffer.
-        auto n = readBuffer.size();
-        fulfiller.fulfill(readSoFar + n);
-        pipe.endState(*this);
-        memcpy(readBuffer.begin(), writeBuffer, n);
-        if (n == size) {
-          // That's it.
+      auto data = arrayPtr(reinterpret_cast<const byte*>(writeBuffer), size);
+      KJ_SWITCH_ONEOF(writeImpl(data, nullptr)) {
+        KJ_CASE_ONEOF(done, Done) {
           return READY_NOW;
-        } else {
-          return pipe.write(reinterpret_cast<const byte*>(writeBuffer) + n, size - n);
+        }
+        KJ_CASE_ONEOF(retry, Retry) {
+          KJ_ASSERT(retry.moreData == nullptr);
+          return pipe.write(retry.data.begin(), retry.data.size());
         }
       }
+      KJ_UNREACHABLE;
     }
 
     Promise<void> write(ArrayPtr<const ArrayPtr<const byte>> pieces) override {
       KJ_REQUIRE(canceler.isEmpty(), "already pumping");
 
-      while (pieces.size() > 0) {
-        if (pieces[0].size() < readBuffer.size()) {
-          // Consume a portion of the read buffer.
-          auto n = pieces[0].size();
-          memcpy(readBuffer.begin(), pieces[0].begin(), n);
-          readSoFar += n;
-          readBuffer = readBuffer.slice(n, readBuffer.size());
-          pieces = pieces.slice(1, pieces.size());
-          // loop
-        } else {
-          // Consume entire read buffer.
-          auto n = readBuffer.size();
-          fulfiller.fulfill(readSoFar + n);
-          pipe.endState(*this);
-          memcpy(readBuffer.begin(), pieces[0].begin(), n);
-
-          auto restOfPiece = pieces[0].slice(n, pieces[0].size());
-          pieces = pieces.slice(1, pieces.size());
-          if (restOfPiece.size() == 0) {
+      KJ_SWITCH_ONEOF(writeImpl(pieces[0], pieces.slice(1, pieces.size()))) {
+        KJ_CASE_ONEOF(done, Done) {
+          return READY_NOW;
+        }
+        KJ_CASE_ONEOF(retry, Retry) {
+          if (retry.data.size() == 0) {
             // We exactly finished the current piece, so just issue a write for the remaining
             // pieces.
-            if (pieces.size() == 0) {
+            if (retry.moreData.size() == 0) {
               // Nothing left.
               return READY_NOW;
             } else {
               // Write remaining pieces.
-              return pipe.write(pieces);
+              return pipe.write(retry.moreData);
             }
           } else {
             // Unfortunately we have to execute a separate write() for the remaining part of this
             // piece, because we can't modify the pieces array.
-            auto promise = pipe.write(restOfPiece.begin(), restOfPiece.size());
-            if (pieces.size() > 0) {
+            auto promise = pipe.write(retry.data.begin(), retry.data.size());
+            if (retry.moreData.size() == 0) {
               // No more pieces so that's it.
               return kj::mv(promise);
             } else {
               // Also need to write the remaining pieces.
               auto& pipeRef = pipe;
-              return promise.then([pieces,&pipeRef]() {
+              return promise.then([pieces=retry.moreData,&pipeRef]() {
                 return pipeRef.write(pieces);
               });
             }
           }
         }
       }
+      KJ_UNREACHABLE;
+    }
 
-      // Consumed all written pieces.
-      if (readSoFar >= minBytes) {
-        // We've read enough to close out this read.
-        fulfiller.fulfill(kj::cp(readSoFar));
-        pipe.endState(*this);
+    Promise<void> writeWithFds(ArrayPtr<const byte> data,
+                               ArrayPtr<const ArrayPtr<const byte>> moreData,
+                               ArrayPtr<const int> fds) override {
+#if __GNUC__ && !__clang__ && __GNUC__ >= 7
+// GCC 7 decides the open-brace below is "misleadingly indented" as if it were guarded by the `for`
+// that appears in the implementation of KJ_REQUIRE(). Shut up shut up shut up.
+#pragma GCC diagnostic ignored "-Wmisleading-indentation"
+#endif
+      KJ_REQUIRE(canceler.isEmpty(), "already pumping");
+
+      {  // TODO(cleanup): Remove redundant braces when we update to C++17.
+        KJ_SWITCH_ONEOF(capBuffer) {
+          KJ_CASE_ONEOF(fdBuffer, ArrayPtr<AutoCloseFd>) {
+            size_t count = kj::max(fdBuffer.size(), fds.size());
+            // Unfortunately, we have to dup() each FD, because the writer doesn't release ownership
+            // by default.
+            // TODO(perf): Should we add an ownership-releasing version of writeWithFds()?
+            for (auto i: kj::zeroTo(count)) {
+              int duped;
+              KJ_SYSCALL(duped = dup(fds[i]));
+              fdBuffer[i] = kj::AutoCloseFd(duped);
+            }
+            capBuffer = fdBuffer.slice(count, fdBuffer.size());
+            readSoFar.capCount += count;
+          }
+          KJ_CASE_ONEOF(streamBuffer, ArrayPtr<Own<AsyncCapabilityStream>>) {
+            if (streamBuffer.size() > 0 && fds.size() > 0) {
+              // TODO(someday): Maybe AsyncIoStream should have a `Maybe<int> getFd()` method?
+              KJ_FAIL_REQUIRE(
+                  "async pipe message was written with FDs attached, but corresponding read "
+                  "asked for streams, and we don't know how to convert here");
+            }
+          }
+        }
       }
 
-      return READY_NOW;
+      KJ_SWITCH_ONEOF(writeImpl(data, moreData)) {
+        KJ_CASE_ONEOF(done, Done) {
+          return READY_NOW;
+        }
+        KJ_CASE_ONEOF(retry, Retry) {
+          // Any leftover fds in `fds` are dropped on the floor, per contract.
+          // TODO(cleanup): We use another writeWithFds() call here only because it accepts `data`
+          //   and `moreData` directly. After the stream API refactor, we should be able to avoid
+          //   this.
+          return pipe.writeWithFds(retry.data, retry.moreData, nullptr);
+        }
+      }
+      KJ_UNREACHABLE;
+    }
+
+    Promise<void> writeWithStreams(ArrayPtr<const byte> data,
+                                   ArrayPtr<const ArrayPtr<const byte>> moreData,
+                                   Array<Own<AsyncCapabilityStream>> streams) override {
+      KJ_REQUIRE(canceler.isEmpty(), "already pumping");
+
+      {  // TODO(cleanup): Remove redundant braces when we update to C++17.
+        KJ_SWITCH_ONEOF(capBuffer) {
+          KJ_CASE_ONEOF(fdBuffer, ArrayPtr<AutoCloseFd>) {
+            if (fdBuffer.size() > 0 && streams.size() > 0) {
+              // TODO(someday): We could let people pass a LowLevelAsyncIoProvider to newTwoWayPipe()
+              //   if we wanted to auto-wrap FDs, but does anyone care?
+              KJ_FAIL_REQUIRE(
+                  "async pipe message was written with streams attached, but corresponding read "
+                  "asked for FDs, and we don't know how to convert here");
+            }
+          }
+          KJ_CASE_ONEOF(streamBuffer, ArrayPtr<Own<AsyncCapabilityStream>>) {
+            size_t count = kj::max(streamBuffer.size(), streams.size());
+            for (auto i: kj::zeroTo(count)) {
+              streamBuffer[i] = kj::mv(streams[i]);
+            }
+            capBuffer = streamBuffer.slice(count, streamBuffer.size());
+            readSoFar.capCount += count;
+          }
+        }
+      }
+
+      KJ_SWITCH_ONEOF(writeImpl(data, moreData)) {
+        KJ_CASE_ONEOF(done, Done) {
+          return READY_NOW;
+        }
+        KJ_CASE_ONEOF(retry, Retry) {
+          // Any leftover fds in `fds` are dropped on the floor, per contract.
+          // TODO(cleanup): We use another writeWithStreams() call here only because it accepts
+          //   `data` and `moreData` directly. After the stream API refactor, we should be able to
+          //   avoid this.
+          return pipe.writeWithStreams(retry.data, retry.moreData, nullptr);
+        }
+      }
+      KJ_UNREACHABLE;
     }
 
     Maybe<Promise<uint64_t>> tryPumpFrom(AsyncInputStream& input, uint64_t amount) override {
+      // Note: Pumps drop all capabilities.
       KJ_REQUIRE(canceler.isEmpty(), "already pumping");
 
-      KJ_ASSERT(minBytes > readSoFar);
-      auto minToRead = kj::min(amount, minBytes - readSoFar);
+      KJ_ASSERT(minBytes > readSoFar.byteCount);
+      auto minToRead = kj::min(amount, minBytes - readSoFar.byteCount);
       auto maxToRead = kj::min(amount, readBuffer.size());
 
       return canceler.wrap(input.tryRead(readBuffer.begin(), minToRead, maxToRead)
-          .then([this,&input,amount,minToRead](size_t actual) -> Promise<uint64_t> {
+          .then([this,&input,amount](size_t actual) -> Promise<uint64_t> {
         readBuffer = readBuffer.slice(actual, readBuffer.size());
-        readSoFar += actual;
+        readSoFar.byteCount += actual;
 
-        if (readSoFar >= minBytes || actual < minToRead) {
-          // We've read enough to close out this read (readSoFar >= minBytes)
-          // OR we reached EOF and couldn't complete the read (actual < minToRead)
-          // Either way, we want to close out this read.
+        if (readSoFar.byteCount >= minBytes) {
+          // We've read enough to close out this read (readSoFar >= minBytes).
           canceler.release();
           fulfiller.fulfill(kj::cp(readSoFar));
           pipe.endState(*this);
 
           if (actual < amount) {
-            // We din't complete pumping. Restart from the pipe.
+            // We didn't read as much data as the pump requested, but we did fulfill the read, so
+            // we don't know whether we reached EOF on the input. We need to continue the pump,
+            // replacing the BlockedRead state.
             return input.pumpTo(pipe, amount - actual)
                 .then([actual](uint64_t actual2) -> uint64_t { return actual + actual2; });
+          } else {
+            // We pumped as much data as was requested, so we can return that now.
+            return actual;
           }
+        } else {
+          // The pump completed without fulfilling the read. This either means that the pump
+          // reached EOF or the `amount` requested was not enough to satisfy the read in the first
+          // place. Pumps do not propagate EOF, so either way we want to leave the BlockedRead in
+          // place waiting for more data.
+          return actual;
         }
-
-        // If we read less than `actual`, but more than `minToRead`, it can only have been
-        // because we reached `minBytes`, so the conditional above would have executed. So, here
-        // we know that actual == amount.
-        KJ_ASSERT(actual == amount);
-
-        // We pumped the full amount, so we're done pumping.
-        return amount;
       }));
     }
 
@@ -765,15 +1057,61 @@ private:
     }
 
   private:
-    PromiseFulfiller<size_t>& fulfiller;
+    PromiseFulfiller<ReadResult>& fulfiller;
     AsyncPipe& pipe;
     ArrayPtr<byte> readBuffer;
     size_t minBytes;
-    size_t readSoFar = 0;
+    kj::OneOf<ArrayPtr<AutoCloseFd>, ArrayPtr<Own<AsyncCapabilityStream>>> capBuffer;
+    ReadResult readSoFar = {0, 0};
     Canceler canceler;
+
+    struct Done {};
+    struct Retry { ArrayPtr<const byte> data; ArrayPtr<const ArrayPtr<const byte>> moreData; };
+
+    OneOf<Done, Retry> writeImpl(ArrayPtr<const byte> data,
+                                 ArrayPtr<const ArrayPtr<const byte>> moreData) {
+      for (;;) {
+        if (data.size() < readBuffer.size()) {
+          // First write segment consumes a portion of the read buffer but not all of it.
+          auto n = data.size();
+          memcpy(readBuffer.begin(), data.begin(), n);
+          readSoFar.byteCount += n;
+          readBuffer = readBuffer.slice(n, readBuffer.size());
+          if (moreData.size() == 0) {
+            // Consumed all written pieces.
+            if (readSoFar.byteCount >= minBytes) {
+              // We've read enough to close out this read.
+              fulfiller.fulfill(kj::cp(readSoFar));
+              pipe.endState(*this);
+            }
+            return Done();
+          }
+          data = moreData[0];
+          moreData = moreData.slice(1, moreData.size());
+          // loop
+        } else {
+          // First write segment consumes entire read buffer.
+          auto n = readBuffer.size();
+          readSoFar.byteCount += n;
+          fulfiller.fulfill(kj::cp(readSoFar));
+          pipe.endState(*this);
+          memcpy(readBuffer.begin(), data.begin(), n);
+
+          data = data.slice(n, data.size());
+          if (data.size() == 0 && moreData.size() == 0) {
+            return Done();
+          } else {
+            // Note: Even if `data` is empty, we don't replace it with moreData[0], because the
+            //   retry might need to use write(ArrayPtr<ArrayPtr<byte>>) which doesn't allow
+            //   passing a separate first segment.
+            return Retry { data, moreData };
+          }
+        }
+      }
+    }
   };
 
-  class BlockedPumpTo final: public AsyncIoStream {
+  class BlockedPumpTo final: public AsyncCapabilityStream {
     // AsyncPipe state when a pumpTo() is currently waiting for a corresponding write().
 
   public:
@@ -789,6 +1127,15 @@ private:
     }
 
     Promise<size_t> tryRead(void* readBuffer, size_t minBytes, size_t maxBytes) override {
+      KJ_FAIL_REQUIRE("can't read() again until previous pumpTo() completes");
+    }
+    Promise<ReadResult> tryReadWithFds(void* readBuffer, size_t minBytes, size_t maxBytes,
+                                       AutoCloseFd* fdBuffer, size_t maxFds) override {
+      KJ_FAIL_REQUIRE("can't read() again until previous pumpTo() completes");
+    }
+    Promise<ReadResult> tryReadWithStreams(
+        void* readBuffer, size_t minBytes, size_t maxBytes,
+        Own<AsyncCapabilityStream>* streamBuffer, size_t maxStreams) override {
       KJ_FAIL_REQUIRE("can't read() again until previous pumpTo() completes");
     }
     Promise<uint64_t> pumpTo(AsyncOutputStream& output, uint64_t amount) override {
@@ -893,6 +1240,40 @@ private:
       }));
     }
 
+    Promise<void> writeWithFds(ArrayPtr<const byte> data,
+                               ArrayPtr<const ArrayPtr<const byte>> moreData,
+                               ArrayPtr<const int> fds) override {
+      // Pumps drop all capabilities, so fall back to regular write().
+
+      // TODO(cleaunp): After stream API refactor, regular write() methods will take
+      //   (data, moreData) and we can clean this up.
+      if (moreData.size() == 0) {
+        return write(data.begin(), data.size());
+      } else {
+        auto pieces = kj::heapArrayBuilder<const ArrayPtr<const byte>>(moreData.size() + 1);
+        pieces.add(data);
+        pieces.addAll(moreData);
+        return write(pieces.finish());
+      }
+    }
+
+    Promise<void> writeWithStreams(ArrayPtr<const byte> data,
+                                   ArrayPtr<const ArrayPtr<const byte>> moreData,
+                                   Array<Own<AsyncCapabilityStream>> streams) override {
+      // Pumps drop all capabilities, so fall back to regular write().
+
+      // TODO(cleaunp): After stream API refactor, regular write() methods will take
+      //   (data, moreData) and we can clean this up.
+      if (moreData.size() == 0) {
+        return write(data.begin(), data.size());
+      } else {
+        auto pieces = kj::heapArrayBuilder<const ArrayPtr<const byte>>(moreData.size() + 1);
+        pieces.add(data);
+        pieces.addAll(moreData);
+        return write(pieces.finish());
+      }
+    }
+
     Maybe<Promise<uint64_t>> tryPumpFrom(AsyncInputStream& input, uint64_t amount2) override {
       KJ_REQUIRE(canceler.isEmpty(), "already pumping");
 
@@ -945,28 +1326,69 @@ private:
     Canceler canceler;
   };
 
-  class AbortedRead final: public AsyncIoStream {
+  class AbortedRead final: public AsyncCapabilityStream {
     // AsyncPipe state when abortRead() has been called.
 
   public:
     Promise<size_t> tryRead(void* readBufferPtr, size_t minBytes, size_t maxBytes) override {
-      KJ_FAIL_REQUIRE("abortRead() has been called");
+      return KJ_EXCEPTION(DISCONNECTED, "abortRead() has been called");
+    }
+    Promise<ReadResult> tryReadWithFds(void* readBuffer, size_t minBytes, size_t maxBytes,
+                                       AutoCloseFd* fdBuffer, size_t maxFds) override {
+      return KJ_EXCEPTION(DISCONNECTED, "abortRead() has been called");
+    }
+    Promise<ReadResult> tryReadWithStreams(
+        void* readBuffer, size_t minBytes, size_t maxBytes,
+        Own<AsyncCapabilityStream>* streamBuffer, size_t maxStreams) override {
+      return KJ_EXCEPTION(DISCONNECTED, "abortRead() has been called");
     }
     Promise<uint64_t> pumpTo(AsyncOutputStream& output, uint64_t amount) override {
-      KJ_FAIL_REQUIRE("abortRead() has been called");
+      return KJ_EXCEPTION(DISCONNECTED, "abortRead() has been called");
     }
     void abortRead() override {
       // ignore repeated abort
     }
 
     Promise<void> write(const void* buffer, size_t size) override {
-      KJ_FAIL_REQUIRE("abortRead() has been called");
+      return KJ_EXCEPTION(DISCONNECTED, "abortRead() has been called");
     }
     Promise<void> write(ArrayPtr<const ArrayPtr<const byte>> pieces) override {
-      KJ_FAIL_REQUIRE("abortRead() has been called");
+      return KJ_EXCEPTION(DISCONNECTED, "abortRead() has been called");
+    }
+    Promise<void> writeWithFds(ArrayPtr<const byte> data,
+                              ArrayPtr<const ArrayPtr<const byte>> moreData,
+                              ArrayPtr<const int> fds) override {
+      return KJ_EXCEPTION(DISCONNECTED, "abortRead() has been called");
+    }
+    Promise<void> writeWithStreams(ArrayPtr<const byte> data,
+                                  ArrayPtr<const ArrayPtr<const byte>> moreData,
+                                  Array<Own<AsyncCapabilityStream>> streams) override {
+      return KJ_EXCEPTION(DISCONNECTED, "abortRead() has been called");
     }
     Maybe<Promise<uint64_t>> tryPumpFrom(AsyncInputStream& input, uint64_t amount) override {
-      KJ_FAIL_REQUIRE("abortRead() has been called");
+      // There might not actually be any data in `input`, in which case a pump wouldn't actually
+      // write anything and wouldn't fail.
+
+      if (input.tryGetLength().orDefault(1) == 0) {
+        // Yeah a pump would pump nothing.
+        return Promise<uint64_t>(uint64_t(0));
+      } else {
+        // While we *could* just return nullptr here, it would probably then fall back to a normal
+        // buffered pump, which would allocate a big old buffer just to find there's nothing to
+        // read. Let's try reading 1 byte to avoid that allocation.
+        static char c;
+        return input.tryRead(&c, 1, 1).then([](size_t n) {
+          if (n == 0) {
+            // Yay, we're at EOF as hoped.
+            return uint64_t(0);
+          } else {
+            // There was data in the input. The pump would have thrown.
+            kj::throwRecoverableException(
+                KJ_EXCEPTION(DISCONNECTED, "abortRead() has been called"));
+            return uint64_t(0);
+          }
+        });
+      }
     }
     void shutdownWrite() override {
       // ignore -- currently shutdownWrite() actually means that the PipeWriteEnd was dropped,
@@ -977,12 +1399,21 @@ private:
     }
   };
 
-  class ShutdownedWrite final: public AsyncIoStream {
+  class ShutdownedWrite final: public AsyncCapabilityStream {
     // AsyncPipe state when shutdownWrite() has been called.
 
   public:
     Promise<size_t> tryRead(void* readBufferPtr, size_t minBytes, size_t maxBytes) override {
       return size_t(0);
+    }
+    Promise<ReadResult> tryReadWithFds(void* readBuffer, size_t minBytes, size_t maxBytes,
+                                       AutoCloseFd* fdBuffer, size_t maxFds) override {
+      return ReadResult { 0, 0 };
+    }
+    Promise<ReadResult> tryReadWithStreams(
+        void* readBuffer, size_t minBytes, size_t maxBytes,
+        Own<AsyncCapabilityStream>* streamBuffer, size_t maxStreams) override {
+      return ReadResult { 0, 0 };
     }
     Promise<uint64_t> pumpTo(AsyncOutputStream& output, uint64_t amount) override {
       return uint64_t(0);
@@ -995,6 +1426,16 @@ private:
       KJ_FAIL_REQUIRE("shutdownWrite() has been called");
     }
     Promise<void> write(ArrayPtr<const ArrayPtr<const byte>> pieces) override {
+      KJ_FAIL_REQUIRE("shutdownWrite() has been called");
+    }
+    Promise<void> writeWithFds(ArrayPtr<const byte> data,
+                               ArrayPtr<const ArrayPtr<const byte>> moreData,
+                               ArrayPtr<const int> fds) override {
+      KJ_FAIL_REQUIRE("shutdownWrite() has been called");
+    }
+    Promise<void> writeWithStreams(ArrayPtr<const byte> data,
+                                   ArrayPtr<const ArrayPtr<const byte>> moreData,
+                                   Array<Own<AsyncCapabilityStream>> streams) override {
       KJ_FAIL_REQUIRE("shutdownWrite() has been called");
     }
     Maybe<Promise<uint64_t>> tryPumpFrom(AsyncInputStream& input, uint64_t amount) override {
@@ -1063,7 +1504,7 @@ private:
   UnwindDetector unwind;
 };
 
-class TwoWayPipeEnd final: public AsyncIoStream {
+class TwoWayPipeEnd final: public AsyncCapabilityStream {
 public:
   TwoWayPipeEnd(kj::Own<AsyncPipe> in, kj::Own<AsyncPipe> out)
       : in(kj::mv(in)), out(kj::mv(out)) {}
@@ -1077,6 +1518,15 @@ public:
   Promise<size_t> tryRead(void* buffer, size_t minBytes, size_t maxBytes) override {
     return in->tryRead(buffer, minBytes, maxBytes);
   }
+  Promise<ReadResult> tryReadWithFds(void* buffer, size_t minBytes, size_t maxBytes,
+                                      AutoCloseFd* fdBuffer, size_t maxFds) override {
+    return in->tryReadWithFds(buffer, minBytes, maxBytes, fdBuffer, maxFds);
+  }
+  Promise<ReadResult> tryReadWithStreams(
+      void* buffer, size_t minBytes, size_t maxBytes,
+      Own<AsyncCapabilityStream>* streamBuffer, size_t maxStreams) override {
+    return in->tryReadWithStreams(buffer, minBytes, maxBytes, streamBuffer, maxStreams);
+  }
   Promise<uint64_t> pumpTo(AsyncOutputStream& output, uint64_t amount) override {
     return in->pumpTo(output, amount);
   }
@@ -1089,6 +1539,16 @@ public:
   }
   Promise<void> write(ArrayPtr<const ArrayPtr<const byte>> pieces) override {
     return out->write(pieces);
+  }
+  Promise<void> writeWithFds(ArrayPtr<const byte> data,
+                             ArrayPtr<const ArrayPtr<const byte>> moreData,
+                             ArrayPtr<const int> fds) override {
+    return out->writeWithFds(data, moreData, fds);
+  }
+  Promise<void> writeWithStreams(ArrayPtr<const byte> data,
+                                 ArrayPtr<const ArrayPtr<const byte>> moreData,
+                                 Array<Own<AsyncCapabilityStream>> streams) override {
+    return out->writeWithStreams(data, moreData, kj::mv(streams));
   }
   Maybe<Promise<uint64_t>> tryPumpFrom(
       AsyncInputStream& input, uint64_t amount) override {
@@ -1112,7 +1572,7 @@ public:
   LimitedInputStream(kj::Own<AsyncInputStream> inner, uint64_t limit)
       : inner(kj::mv(inner)), limit(limit) {
     if (limit == 0) {
-      inner = nullptr;
+      this->inner = nullptr;
     }
   }
 
@@ -1149,7 +1609,7 @@ private:
     if (limit == 0) {
       inner = nullptr;
     } else if (amount < requested) {
-      KJ_FAIL_REQUIRE("pipe ended prematurely");
+      KJ_FAIL_REQUIRE("pipe ended prematurely") { break; }
     }
   }
 };
@@ -1167,6 +1627,14 @@ OneWayPipe newOneWayPipe(kj::Maybe<uint64_t> expectedLength) {
 }
 
 TwoWayPipe newTwoWayPipe() {
+  auto pipe1 = kj::refcounted<AsyncPipe>();
+  auto pipe2 = kj::refcounted<AsyncPipe>();
+  auto end1 = kj::heap<TwoWayPipeEnd>(kj::addRef(*pipe1), kj::addRef(*pipe2));
+  auto end2 = kj::heap<TwoWayPipeEnd>(kj::mv(pipe2), kj::mv(pipe1));
+  return { { kj::mv(end1), kj::mv(end2) } };
+}
+
+CapabilityPipe newCapabilityPipe() {
   auto pipe1 = kj::refcounted<AsyncPipe>();
   auto pipe2 = kj::refcounted<AsyncPipe>();
   auto end1 = kj::heap<TwoWayPipeEnd>(kj::addRef(*pipe1), kj::addRef(*pipe2));
@@ -1443,17 +1911,9 @@ private:
       auto writeBuffer = inBuffer.asArray(limit, amount);
       KJ_ASSERT(limit >= amount);
       if (amount > 0) {
-        Promise<void> promise = nullptr;
-
-        // TODO(soon): Replace try/catch with kj::evalNow() to work with -fno-exceptions.
-        try {
-          promise = output.write(writeBuffer).attach(mv(writeBuffer));
-        } catch (const Exception& exception) {
-          reject(cp(exception));
-          return READY_NOW;
-        }
-
-        promise = promise.then([this, amount]() {
+        Promise<void> promise = kj::evalNow([&]() {
+          return output.write(writeBuffer).attach(mv(writeBuffer));
+        }).then([this, amount]() {
           limit -= amount;
           pumpedSoFar += amount;
           if (limit == 0) {
@@ -1543,6 +2003,31 @@ private:
   }
 
   Promise<void> pull() {
+    return pullLoop().eagerlyEvaluate([this](Exception&& exception) {
+      // Exception from our loop, not from inner tryRead(). Something is broken; tell everybody!
+      pulling = false;
+      for (auto& state: branches) {
+        KJ_IF_MAYBE(s, state) {
+          KJ_IF_MAYBE(sink, s->sink) {
+            sink->reject(KJ_EXCEPTION(FAILED, "Exception in tee loop", exception));
+          }
+        }
+      }
+    });
+  }
+
+  constexpr static size_t MAX_BLOCK_SIZE = 1 << 14;  // 16k
+
+  Own<AsyncInputStream> inner;
+  const uint64_t bufferSizeLimit = kj::maxValue;
+  Maybe<uint64_t> length;
+  Maybe<Branch> branches[2];
+  Maybe<Stoppage> stoppage;
+  Promise<void> pullPromise = READY_NOW;
+  bool pulling = false;
+
+private:
+  Promise<void> pullLoop() {
     // Use evalLater() so that two pump sinks added on the same turn of the event loop will not
     // cause buffering.
     return evalLater([this] {
@@ -1573,7 +2058,7 @@ private:
 
       if (stoppage != nullptr) {
         // We're eof or errored, don't read, but loop so we can fill the sink(s).
-        return pull();
+        return pullLoop();
       }
 
       auto& n = KJ_ASSERT_NONNULL(need);
@@ -1593,7 +2078,7 @@ private:
           // TODO(perf): buffer.size() is O(n) where n = # of individual heap-allocated byte arrays.
           if (s->buffer.size() + n.maxBytes > bufferSizeLimit) {
             stoppage = Stoppage(KJ_EXCEPTION(FAILED, "tee buffer size limit exceeded"));
-            return pull();
+            return pullLoop();
           }
         }
       }
@@ -1608,75 +2093,49 @@ private:
       // correct value for `heapBuffer.size()`... I dunno, man.
       auto destination = heapBuffer.begin();
 
-      try {
-        return inner->tryRead(destination, n.minBytes, n.maxBytes)
-            .then([this, heapBuffer = mv(heapBuffer), minBytes = n.minBytes](size_t amount) mutable
-                -> Promise<void> {
-          length = length.map([amount](uint64_t n) {
-            KJ_ASSERT(n >= amount);
-            return n - amount;
-          });
+      return kj::evalNow([&]() { return inner->tryRead(destination, n.minBytes, n.maxBytes); })
+          .then([this, heapBuffer = mv(heapBuffer), minBytes = n.minBytes](size_t amount) mutable
+              -> Promise<void> {
+        length = length.map([amount](uint64_t n) {
+          KJ_ASSERT(n >= amount);
+          return n - amount;
+        });
 
-          if (amount < heapBuffer.size()) {
-            heapBuffer = heapBuffer.slice(0, amount).attach(mv(heapBuffer));
-          }
+        if (amount < heapBuffer.size()) {
+          heapBuffer = heapBuffer.slice(0, amount).attach(mv(heapBuffer));
+        }
 
-          KJ_ASSERT(stoppage == nullptr);
-          Maybe<ArrayPtr<byte>> bufferPtr = nullptr;
-          for (auto& state: branches) {
-            KJ_IF_MAYBE(s, state) {
-              // Prefer to move the buffer into the receiving branch's deque, rather than memcpy.
-              //
-              // TODO(perf): For the 2-branch case, this is fine, since the majority of the time
-              //   only one buffer will be in use. If we generalize to the n-branch case, this would
-              //   become memcpy-heavy.
-              KJ_IF_MAYBE(ptr, bufferPtr) {
-                s->buffer.produce(heapArray(*ptr));
-              } else {
-                bufferPtr = ArrayPtr<byte>(heapBuffer);
-                s->buffer.produce(mv(heapBuffer));
-              }
+        KJ_ASSERT(stoppage == nullptr);
+        Maybe<ArrayPtr<byte>> bufferPtr = nullptr;
+        for (auto& state: branches) {
+          KJ_IF_MAYBE(s, state) {
+            // Prefer to move the buffer into the receiving branch's deque, rather than memcpy.
+            //
+            // TODO(perf): For the 2-branch case, this is fine, since the majority of the time
+            //   only one buffer will be in use. If we generalize to the n-branch case, this would
+            //   become memcpy-heavy.
+            KJ_IF_MAYBE(ptr, bufferPtr) {
+              s->buffer.produce(heapArray(*ptr));
+            } else {
+              bufferPtr = ArrayPtr<byte>(heapBuffer);
+              s->buffer.produce(mv(heapBuffer));
             }
           }
-
-          if (amount < minBytes) {
-            // Short read, EOF.
-            stoppage = Stoppage(Eof());
-          }
-
-          return pull();
-        }, [this](Exception&& exception) {
-          // Exception from the inner tryRead(). Propagate.
-          stoppage = Stoppage(mv(exception));
-          return pull();
-        });
-      } catch (const Exception& exception) {
-        // Exception from the inner tryRead(). Propagate.
-        stoppage = Stoppage(cp(exception));
-        return pull();
-      }
-    }).eagerlyEvaluate([this](Exception&& exception) {
-      // Exception from our loop, not from inner tryRead(). Something is broken; tell everybody!
-      pulling = false;
-      for (auto& state: branches) {
-        KJ_IF_MAYBE(s, state) {
-          KJ_IF_MAYBE(sink, s->sink) {
-            sink->reject(KJ_EXCEPTION(FAILED, "Exception in tee loop", exception));
-          }
         }
-      }
+
+        if (amount < minBytes) {
+          // Short read, EOF.
+          stoppage = Stoppage(Eof());
+        }
+
+        return pullLoop();
+      }, [this](Exception&& exception) {
+        // Exception from the inner tryRead(). Propagate.
+        stoppage = Stoppage(mv(exception));
+        return pullLoop();
+      });
     });
   }
-
-  constexpr static size_t MAX_BLOCK_SIZE = 1 << 14;  // 16k
-
-  Own<AsyncInputStream> inner;
-  const uint64_t bufferSizeLimit = kj::maxValue;
-  Maybe<uint64_t> length;
-  Maybe<Branch> branches[2];
-  Maybe<Stoppage> stoppage;
-  Promise<void> pullPromise = READY_NOW;
-  bool pulling = false;
 };
 
 constexpr size_t AsyncTee::MAX_BLOCK_SIZE;
@@ -1798,6 +2257,229 @@ Tee newTee(Own<AsyncInputStream> input, uint64_t limit) {
   return { { mv(branch1), mv(branch2) } };
 }
 
+namespace {
+
+class PromisedAsyncIoStream final: public kj::AsyncIoStream, private kj::TaskSet::ErrorHandler {
+  // An AsyncIoStream which waits for a promise to resolve then forwards all calls to the promised
+  // stream.
+
+public:
+  PromisedAsyncIoStream(kj::Promise<kj::Own<AsyncIoStream>> promise)
+      : promise(promise.then([this](kj::Own<AsyncIoStream> result) {
+          stream = kj::mv(result);
+        }).fork()),
+        tasks(*this) {}
+
+  kj::Promise<size_t> read(void* buffer, size_t minBytes, size_t maxBytes) override {
+    KJ_IF_MAYBE(s, stream) {
+      return s->get()->read(buffer, minBytes, maxBytes);
+    } else {
+      return promise.addBranch().then([this,buffer,minBytes,maxBytes]() {
+        return KJ_ASSERT_NONNULL(stream)->read(buffer, minBytes, maxBytes);
+      });
+    }
+  }
+  kj::Promise<size_t> tryRead(void* buffer, size_t minBytes, size_t maxBytes) override {
+    KJ_IF_MAYBE(s, stream) {
+      return s->get()->tryRead(buffer, minBytes, maxBytes);
+    } else {
+      return promise.addBranch().then([this,buffer,minBytes,maxBytes]() {
+        return KJ_ASSERT_NONNULL(stream)->tryRead(buffer, minBytes, maxBytes);
+      });
+    }
+  }
+
+  kj::Maybe<uint64_t> tryGetLength() override {
+    KJ_IF_MAYBE(s, stream) {
+      return s->get()->tryGetLength();
+    } else {
+      return nullptr;
+    }
+  }
+
+  kj::Promise<uint64_t> pumpTo(kj::AsyncOutputStream& output, uint64_t amount) override {
+    KJ_IF_MAYBE(s, stream) {
+      return s->get()->pumpTo(output, amount);
+    } else {
+      return promise.addBranch().then([this,&output,amount]() {
+        return KJ_ASSERT_NONNULL(stream)->pumpTo(output, amount);
+      });
+    }
+  }
+
+  kj::Promise<void> write(const void* buffer, size_t size) override {
+    KJ_IF_MAYBE(s, stream) {
+      return s->get()->write(buffer, size);
+    } else {
+      return promise.addBranch().then([this,buffer,size]() {
+        return KJ_ASSERT_NONNULL(stream)->write(buffer, size);
+      });
+    }
+  }
+  kj::Promise<void> write(kj::ArrayPtr<const kj::ArrayPtr<const byte>> pieces) override {
+    KJ_IF_MAYBE(s, stream) {
+      return s->get()->write(pieces);
+    } else {
+      return promise.addBranch().then([this,pieces]() {
+        return KJ_ASSERT_NONNULL(stream)->write(pieces);
+      });
+    }
+  }
+
+  kj::Maybe<kj::Promise<uint64_t>> tryPumpFrom(
+      kj::AsyncInputStream& input, uint64_t amount = kj::maxValue) override {
+    KJ_IF_MAYBE(s, stream) {
+      // Call input.pumpTo() on the resolved stream instead, so that if it does some dynamic_casts
+      // or whatnot to detect stream types it can retry those on the inner stream.
+      return input.pumpTo(**s, amount);
+    } else {
+      return promise.addBranch().then([this,&input,amount]() {
+        // Here we actually have no choice but to call input.pumpTo() because if we called
+        // tryPumpFrom(input, amount) and it returned nullptr, what would we do? It's too late for
+        // us to return nullptr. But the thing about dynamic_cast also applies.
+        return input.pumpTo(*KJ_ASSERT_NONNULL(stream), amount);
+      });
+    }
+  }
+
+  Promise<void> whenWriteDisconnected() override {
+    KJ_IF_MAYBE(s, stream) {
+      return s->get()->whenWriteDisconnected();
+    } else {
+      return promise.addBranch().then([this]() {
+        return KJ_ASSERT_NONNULL(stream)->whenWriteDisconnected();
+      }, [](kj::Exception&& e) -> kj::Promise<void> {
+        if (e.getType() == kj::Exception::Type::DISCONNECTED) {
+          return kj::READY_NOW;
+        } else {
+          return kj::mv(e);
+        }
+      });
+    }
+  }
+
+  void shutdownWrite() override {
+    KJ_IF_MAYBE(s, stream) {
+      return s->get()->shutdownWrite();
+    } else {
+      tasks.add(promise.addBranch().then([this]() {
+        return KJ_ASSERT_NONNULL(stream)->shutdownWrite();
+      }));
+    }
+  }
+
+  void abortRead() override {
+    KJ_IF_MAYBE(s, stream) {
+      return s->get()->abortRead();
+    } else {
+      tasks.add(promise.addBranch().then([this]() {
+        return KJ_ASSERT_NONNULL(stream)->abortRead();
+      }));
+    }
+  }
+
+private:
+  kj::ForkedPromise<void> promise;
+  kj::Maybe<kj::Own<AsyncIoStream>> stream;
+  kj::TaskSet tasks;
+
+  void taskFailed(kj::Exception&& exception) override {
+    KJ_LOG(ERROR, exception);
+  }
+};
+
+class PromisedAsyncOutputStream final: public kj::AsyncOutputStream {
+  // An AsyncOutputStream which waits for a promise to resolve then forwards all calls to the
+  // promised stream.
+  //
+  // TODO(cleanup): Can this share implementation with PromiseIoStream? Seems hard.
+
+public:
+  PromisedAsyncOutputStream(kj::Promise<kj::Own<AsyncOutputStream>> promise)
+      : promise(promise.then([this](kj::Own<AsyncOutputStream> result) {
+          stream = kj::mv(result);
+        }).fork()) {}
+
+  kj::Promise<void> write(const void* buffer, size_t size) override {
+    KJ_IF_MAYBE(s, stream) {
+      return s->get()->write(buffer, size);
+    } else {
+      return promise.addBranch().then([this,buffer,size]() {
+        return KJ_ASSERT_NONNULL(stream)->write(buffer, size);
+      });
+    }
+  }
+  kj::Promise<void> write(kj::ArrayPtr<const kj::ArrayPtr<const byte>> pieces) override {
+    KJ_IF_MAYBE(s, stream) {
+      return s->get()->write(pieces);
+    } else {
+      return promise.addBranch().then([this,pieces]() {
+        return KJ_ASSERT_NONNULL(stream)->write(pieces);
+      });
+    }
+  }
+
+  kj::Maybe<kj::Promise<uint64_t>> tryPumpFrom(
+      kj::AsyncInputStream& input, uint64_t amount = kj::maxValue) override {
+    KJ_IF_MAYBE(s, stream) {
+      return s->get()->tryPumpFrom(input, amount);
+    } else {
+      return promise.addBranch().then([this,&input,amount]() {
+        // Call input.pumpTo() on the resolved stream instead.
+        return input.pumpTo(*KJ_ASSERT_NONNULL(stream), amount);
+      });
+    }
+  }
+
+  Promise<void> whenWriteDisconnected() override {
+    KJ_IF_MAYBE(s, stream) {
+      return s->get()->whenWriteDisconnected();
+    } else {
+      return promise.addBranch().then([this]() {
+        return KJ_ASSERT_NONNULL(stream)->whenWriteDisconnected();
+      }, [](kj::Exception&& e) -> kj::Promise<void> {
+        if (e.getType() == kj::Exception::Type::DISCONNECTED) {
+          return kj::READY_NOW;
+        } else {
+          return kj::mv(e);
+        }
+      });
+    }
+  }
+
+private:
+  kj::ForkedPromise<void> promise;
+  kj::Maybe<kj::Own<AsyncOutputStream>> stream;
+};
+
+}  // namespace
+
+Own<AsyncOutputStream> newPromisedStream(Promise<Own<AsyncOutputStream>> promise) {
+  return heap<PromisedAsyncOutputStream>(kj::mv(promise));
+}
+Own<AsyncIoStream> newPromisedStream(Promise<Own<AsyncIoStream>> promise) {
+  return heap<PromisedAsyncIoStream>(kj::mv(promise));
+}
+
+Promise<void> AsyncCapabilityStream::writeWithFds(
+    ArrayPtr<const byte> data, ArrayPtr<const ArrayPtr<const byte>> moreData,
+    ArrayPtr<const AutoCloseFd> fds) {
+  // HACK: AutoCloseFd actually contains an `int` under the hood. We can reinterpret_cast to avoid
+  //   unnecessary memory allocation.
+  static_assert(sizeof(AutoCloseFd) == sizeof(int), "this optimization won't work");
+  auto intArray = arrayPtr(reinterpret_cast<const int*>(fds.begin()), fds.size());
+
+  // Be extra-paranoid about aliasing rules by injecting a compiler barrier here. Probably
+  // not necessary but also probably doesn't hurt.
+#if _MSC_VER
+  _ReadWriteBarrier();
+#else
+  __asm__ __volatile__("": : :"memory");
+#endif
+
+  return writeWithFds(data, moreData, intArray);
+}
+
 Promise<Own<AsyncCapabilityStream>> AsyncCapabilityStream::receiveStream() {
   return tryReceiveStream()
       .then([](Maybe<Own<AsyncCapabilityStream>>&& result)
@@ -1810,6 +2492,35 @@ Promise<Own<AsyncCapabilityStream>> AsyncCapabilityStream::receiveStream() {
   });
 }
 
+kj::Promise<Maybe<Own<AsyncCapabilityStream>>> AsyncCapabilityStream::tryReceiveStream() {
+  struct ResultHolder {
+    byte b;
+    Own<AsyncCapabilityStream> stream;
+  };
+  auto result = kj::heap<ResultHolder>();
+  auto promise = tryReadWithStreams(&result->b, 1, 1, &result->stream, 1);
+  return promise.then([result = kj::mv(result)](ReadResult actual) mutable
+                      -> Maybe<Own<AsyncCapabilityStream>> {
+    if (actual.byteCount == 0) {
+      return nullptr;
+    }
+
+    KJ_REQUIRE(actual.capCount == 1,
+        "expected to receive a capability (e.g. file descirptor via SCM_RIGHTS), but didn't") {
+      return nullptr;
+    }
+
+    return kj::mv(result->stream);
+  });
+}
+
+Promise<void> AsyncCapabilityStream::sendStream(Own<AsyncCapabilityStream> stream) {
+  static constexpr byte b = 0;
+  auto streams = kj::heapArray<Own<AsyncCapabilityStream>>(1);
+  streams[0] = kj::mv(stream);
+  return writeWithStreams(arrayPtr(&b, 1), nullptr, kj::mv(streams));
+}
+
 Promise<AutoCloseFd> AsyncCapabilityStream::receiveFd() {
   return tryReceiveFd().then([](Maybe<AutoCloseFd>&& result) -> Promise<AutoCloseFd> {
     KJ_IF_MAYBE(r, result) {
@@ -1819,36 +2530,63 @@ Promise<AutoCloseFd> AsyncCapabilityStream::receiveFd() {
     }
   });
 }
-Promise<Maybe<AutoCloseFd>> AsyncCapabilityStream::tryReceiveFd() {
-  return KJ_EXCEPTION(UNIMPLEMENTED, "this stream cannot receive file descriptors");
+
+kj::Promise<kj::Maybe<AutoCloseFd>> AsyncCapabilityStream::tryReceiveFd() {
+  struct ResultHolder {
+    byte b;
+    AutoCloseFd fd;
+  };
+  auto result = kj::heap<ResultHolder>();
+  auto promise = tryReadWithFds(&result->b, 1, 1, &result->fd, 1);
+  return promise.then([result = kj::mv(result)](ReadResult actual) mutable
+                      -> Maybe<AutoCloseFd> {
+    if (actual.byteCount == 0) {
+      return nullptr;
+    }
+
+    KJ_REQUIRE(actual.capCount == 1,
+        "expected to receive a file descriptor (e.g. via SCM_RIGHTS), but didn't") {
+      return nullptr;
+    }
+
+    return kj::mv(result->fd);
+  });
 }
+
 Promise<void> AsyncCapabilityStream::sendFd(int fd) {
-  return KJ_EXCEPTION(UNIMPLEMENTED, "this stream cannot send file descriptors");
+  static constexpr byte b = 0;
+  auto fds = kj::heapArray<int>(1);
+  fds[0] = fd;
+  auto promise = writeWithFds(arrayPtr(&b, 1), nullptr, fds);
+  return promise.attach(kj::mv(fds));
 }
 
 void AsyncIoStream::getsockopt(int level, int option, void* value, uint* length) {
-  KJ_UNIMPLEMENTED("Not a socket.");
+  KJ_UNIMPLEMENTED("Not a socket.") { *length = 0; break; }
 }
 void AsyncIoStream::setsockopt(int level, int option, const void* value, uint length) {
-  KJ_UNIMPLEMENTED("Not a socket.");
+  KJ_UNIMPLEMENTED("Not a socket.") { break; }
 }
 void AsyncIoStream::getsockname(struct sockaddr* addr, uint* length) {
-  KJ_UNIMPLEMENTED("Not a socket.");
+  KJ_UNIMPLEMENTED("Not a socket.") { *length = 0; break; }
 }
 void AsyncIoStream::getpeername(struct sockaddr* addr, uint* length) {
-  KJ_UNIMPLEMENTED("Not a socket.");
+  KJ_UNIMPLEMENTED("Not a socket.") { *length = 0; break; }
 }
 void ConnectionReceiver::getsockopt(int level, int option, void* value, uint* length) {
-  KJ_UNIMPLEMENTED("Not a socket.");
+  KJ_UNIMPLEMENTED("Not a socket.") { *length = 0; break; }
 }
 void ConnectionReceiver::setsockopt(int level, int option, const void* value, uint length) {
-  KJ_UNIMPLEMENTED("Not a socket.");
+  KJ_UNIMPLEMENTED("Not a socket.") { break; }
+}
+void ConnectionReceiver::getsockname(struct sockaddr* addr, uint* length) {
+  KJ_UNIMPLEMENTED("Not a socket.") { *length = 0; break; }
 }
 void DatagramPort::getsockopt(int level, int option, void* value, uint* length) {
-  KJ_UNIMPLEMENTED("Not a socket.");
+  KJ_UNIMPLEMENTED("Not a socket.") { *length = 0; break; }
 }
 void DatagramPort::setsockopt(int level, int option, const void* value, uint length) {
-  KJ_UNIMPLEMENTED("Not a socket.");
+  KJ_UNIMPLEMENTED("Not a socket.") { break; }
 }
 Own<DatagramPort> NetworkAddress::bindDatagramPort() {
   KJ_UNIMPLEMENTED("Datagram sockets not implemented.");
@@ -1924,17 +2662,33 @@ Promise<Own<AsyncIoStream>> CapabilityStreamConnectionReceiver::accept() {
   });
 }
 
+Promise<AuthenticatedStream> CapabilityStreamConnectionReceiver::acceptAuthenticated() {
+  return accept().then([](Own<AsyncIoStream>&& stream) {
+    return AuthenticatedStream { kj::mv(stream), UnknownPeerIdentity::newInstance() };
+  });
+}
+
 uint CapabilityStreamConnectionReceiver::getPort() {
   return 0;
 }
 
 Promise<Own<AsyncIoStream>> CapabilityStreamNetworkAddress::connect() {
-  auto pipe = provider.newCapabilityPipe();
+  CapabilityPipe pipe;
+  KJ_IF_MAYBE(p, provider) {
+    pipe = p->newCapabilityPipe();
+  } else {
+    pipe = kj::newCapabilityPipe();
+  }
   auto result = kj::mv(pipe.ends[0]);
   return inner.sendStream(kj::mv(pipe.ends[1]))
       .then(kj::mvCapture(result, [](Own<AsyncIoStream>&& result) {
     return kj::mv(result);
   }));
+}
+Promise<AuthenticatedStream> CapabilityStreamNetworkAddress::connectAuthenticated() {
+  return connect().then([](Own<AsyncIoStream>&& stream) {
+    return AuthenticatedStream { kj::mv(stream), UnknownPeerIdentity::newInstance() };
+  });
 }
 Own<ConnectionReceiver> CapabilityStreamNetworkAddress::listen() {
   return kj::heap<CapabilityStreamConnectionReceiver>(inner);
@@ -2289,4 +3043,81 @@ bool NetworkFilter::shouldAllowParse(const struct sockaddr* addr, uint addrlen) 
 }
 
 }  // namespace _ (private)
+
+// =======================================================================================
+// PeerIdentity implementations
+
+namespace {
+
+class NetworkPeerIdentityImpl final: public NetworkPeerIdentity {
+public:
+  NetworkPeerIdentityImpl(kj::Own<NetworkAddress> addr): addr(kj::mv(addr)) {}
+
+  kj::String toString() override { return addr->toString(); }
+  NetworkAddress& getAddress() override { return *addr; }
+
+private:
+  kj::Own<NetworkAddress> addr;
+};
+
+class LocalPeerIdentityImpl final: public LocalPeerIdentity {
+public:
+  LocalPeerIdentityImpl(Credentials creds): creds(creds) {}
+
+  kj::String toString() override {
+    char pidBuffer[16];
+    kj::StringPtr pidStr = nullptr;
+    KJ_IF_MAYBE(p, creds.pid) {
+      pidStr = strPreallocated(pidBuffer, " pid:", *p);
+    }
+
+    char uidBuffer[16];
+    kj::StringPtr uidStr = nullptr;
+    KJ_IF_MAYBE(u, creds.uid) {
+      uidStr = strPreallocated(uidBuffer, " uid:", *u);
+    }
+
+    return kj::str("(local peer", pidStr, uidStr, ")");
+  }
+
+  Credentials getCredentials() override { return creds; }
+
+private:
+  Credentials creds;
+};
+
+class UnknownPeerIdentityImpl final: public UnknownPeerIdentity {
+public:
+  kj::String toString() override {
+    return kj::str("(unknown peer)");
+  }
+};
+
+}  // namespace
+
+kj::Own<NetworkPeerIdentity> NetworkPeerIdentity::newInstance(kj::Own<NetworkAddress> addr) {
+  return kj::heap<NetworkPeerIdentityImpl>(kj::mv(addr));
+}
+
+kj::Own<LocalPeerIdentity> LocalPeerIdentity::newInstance(LocalPeerIdentity::Credentials creds) {
+  return kj::heap<LocalPeerIdentityImpl>(creds);
+}
+
+kj::Own<UnknownPeerIdentity> UnknownPeerIdentity::newInstance() {
+  static UnknownPeerIdentityImpl instance;
+  return { &instance, NullDisposer::instance };
+}
+
+Promise<AuthenticatedStream> ConnectionReceiver::acceptAuthenticated() {
+  return accept().then([](Own<AsyncIoStream> stream) {
+    return AuthenticatedStream { kj::mv(stream), UnknownPeerIdentity::newInstance() };
+  });
+}
+
+Promise<AuthenticatedStream> NetworkAddress::connectAuthenticated() {
+  return connect().then([](Own<AsyncIoStream> stream) {
+    return AuthenticatedStream { kj::mv(stream), UnknownPeerIdentity::newInstance() };
+  });
+}
+
 }  // namespace kj

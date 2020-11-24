@@ -42,10 +42,11 @@
 #endif
 
 namespace kj {
-namespace {
 
 // =======================================================================================
 // misc helpers
+
+namespace {
 
 KJ_NORETURN(void throwOpensslError());
 void throwOpensslError() {
@@ -95,6 +96,8 @@ inline void ensureOpenSslInitialized() {
   // As of 1.1.0, no initialization is needed.
 }
 #endif
+
+}  // namespace
 
 // =======================================================================================
 // Implementation of kj::AsyncIoStream that applies TLS on top of some other AsyncIoStream.
@@ -164,6 +167,11 @@ public:
     return sslCall([this]() { return SSL_accept(ssl); }).ignoreResult();
   }
 
+  kj::Own<TlsPeerIdentity> getIdentity(kj::Own<kj::PeerIdentity> inner) {
+    return kj::heap<TlsPeerIdentity>(SSL_get_peer_certificate(ssl), kj::mv(inner),
+                                     kj::Badge<TlsConnection>());
+  }
+
   ~TlsConnection() noexcept(false) {
     SSL_free(ssl);
   }
@@ -177,7 +185,8 @@ public:
   }
 
   Promise<void> write(ArrayPtr<const ArrayPtr<const byte>> pieces) override {
-    return writeInternal(pieces[0], pieces.slice(1, pieces.size()));
+    auto cork = writeBuffer.cork();
+    return writeInternal(pieces[0], pieces.slice(1, pieces.size())).attach(kj::mv(cork));
   }
 
   Promise<void> whenWriteDisconnected() override {
@@ -187,7 +196,7 @@ public:
   void shutdownWrite() override {
     KJ_REQUIRE(shutdownTask == nullptr, "already called shutdownWrite()");
 
-    // TODO(0.8): shutdownWrite() is problematic because it doesn't return a promise. It was
+    // TODO(0.9): shutdownWrite() is problematic because it doesn't return a promise. It was
     //   designed to assume that it would only be called after all writes are finished and that
     //   there was no reason to block at that point, but SSL sessions don't fit this since they
     //   actually have to send a shutdown message.
@@ -248,6 +257,16 @@ private:
                               kj::ArrayPtr<const kj::ArrayPtr<const byte>> rest) {
     KJ_REQUIRE(shutdownTask == nullptr, "already called shutdownWrite()");
 
+    // SSL_write() with a zero-sized input returns 0, but a 0 return is documented as indicating
+    // an error. So, we need to avoid zero-sized writes entirely.
+    while (first.size() == 0) {
+      if (rest.size() == 0) {
+        return kj::READY_NOW;
+      }
+      first = rest.front();
+      rest = rest.slice(1, rest.size());
+    }
+
     return sslCall([this,first]() { return SSL_write(ssl, first.begin(), first.size()); })
         .then([this,first,rest](size_t n) -> kj::Promise<void> {
       if (n == 0) {
@@ -266,7 +285,7 @@ private:
   kj::Promise<size_t> sslCall(Func&& func) {
     if (disconnected) return size_t(0);
 
-    ssize_t result = func();
+    auto result = func();
 
     if (result > 0) {
       return result;
@@ -393,6 +412,12 @@ public:
     });
   }
 
+  Promise<kj::AuthenticatedStream> acceptAuthenticated() override {
+    return inner->acceptAuthenticated().then([this](kj::AuthenticatedStream stream) {
+      return tls.wrapServer(kj::mv(stream));
+    });
+  }
+
   uint getPort() override {
     return inner->getPort();
   }
@@ -425,6 +450,18 @@ public:
         [&tlsRef](kj::String&& hostname, Own<AsyncIoStream>&& stream) {
       return tlsRef.wrapClient(kj::mv(stream), hostname);
     }));
+  }
+
+  Promise<kj::AuthenticatedStream> connectAuthenticated() override {
+    // Note: It's unfortunately pretty common for people to assume they can drop the NetworkAddress
+    //   as soon as connect() returns, and this works with the native network implementation.
+    //   So, we make some copies here.
+    auto& tlsRef = tls;
+    auto hostnameCopy = kj::str(hostname);
+    return inner->connectAuthenticated().then(
+        [&tlsRef, hostname = kj::mv(hostnameCopy)](kj::AuthenticatedStream stream) {
+      return tlsRef.wrapClient(kj::mv(stream), hostname);
+    });
   }
 
   Own<ConnectionReceiver> listen() override {
@@ -485,16 +522,14 @@ private:
   kj::Own<kj::Network> ownInner;
 };
 
-}  // namespace
-
 // =======================================================================================
 // class TlsContext
 
 TlsContext::Options::Options()
     : useSystemTrustStore(true),
       verifyClients(false),
-      minVersion(TlsVersion::TLS_1_0),
-      cipherList("ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA256:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES256-SHA384:ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES256-SHA384:ECDHE-ECDSA-AES256-SHA:ECDHE-RSA-AES256-SHA:ECDHE-ECDSA-DES-CBC3-SHA:ECDHE-RSA-DES-CBC3-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA256:AES256-SHA256:AES128-SHA:AES256-SHA:DES-CBC3-SHA:!DSS") {}
+      minVersion(TlsVersion::TLS_1_2),
+      cipherList("ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305") {}
 // Cipher list is Mozilla's "intermediate" list, except with classic DH removed since we don't
 // currently support setting dhparams. See:
 //     https://mozilla.github.io/server-side-tls/ssl-config-generator/
@@ -666,6 +701,25 @@ kj::Promise<kj::Own<kj::AsyncIoStream>> TlsContext::wrapServer(kj::Own<kj::Async
   }));
 }
 
+kj::Promise<kj::AuthenticatedStream> TlsContext::wrapClient(
+    kj::AuthenticatedStream stream, kj::StringPtr expectedServerHostname) {
+  auto conn = kj::heap<TlsConnection>(kj::mv(stream.stream), reinterpret_cast<SSL_CTX*>(ctx));
+  auto promise = conn->connect(expectedServerHostname);
+  return promise.then([conn=kj::mv(conn),innerId=kj::mv(stream.peerIdentity)]() mutable {
+    auto id = conn->getIdentity(kj::mv(innerId));
+    return kj::AuthenticatedStream { kj::mv(conn), kj::mv(id) };
+  });
+}
+
+kj::Promise<kj::AuthenticatedStream> TlsContext::wrapServer(kj::AuthenticatedStream stream) {
+  auto conn = kj::heap<TlsConnection>(kj::mv(stream.stream), reinterpret_cast<SSL_CTX*>(ctx));
+  auto promise = conn->accept();
+  return promise.then([conn=kj::mv(conn),innerId=kj::mv(stream.peerIdentity)]() mutable {
+    auto id = conn->getIdentity(kj::mv(innerId));
+    return kj::AuthenticatedStream { kj::mv(conn), kj::mv(id) };
+  });
+}
+
 kj::Own<kj::ConnectionReceiver> TlsContext::wrapPort(kj::Own<kj::ConnectionReceiver> port) {
   return kj::heap<TlsConnectionReceiver>(*this, kj::mv(port));
 }
@@ -833,6 +887,45 @@ TlsCertificate::~TlsCertificate() noexcept(false) {
     if (p == nullptr) break;  // end of chain; quit early
     X509_free(reinterpret_cast<X509*>(p));
   }
+}
+
+// =======================================================================================
+// class TlsPeerIdentity
+
+TlsPeerIdentity::~TlsPeerIdentity() noexcept(false) {
+  if (cert != nullptr) {
+    X509_free(reinterpret_cast<X509*>(cert));
+  }
+}
+
+kj::String TlsPeerIdentity::toString() {
+  if (hasCertificate()) {
+    return getCommonName();
+  } else {
+    return kj::str("(anonymous client)");
+  }
+}
+
+kj::String TlsPeerIdentity::getCommonName() {
+  if (cert == nullptr) {
+    KJ_FAIL_REQUIRE("client did not provide a certificate") { return nullptr; }
+  }
+
+  X509_NAME* subj = X509_get_subject_name(reinterpret_cast<X509*>(cert));
+
+  int index = X509_NAME_get_index_by_NID(subj, NID_commonName, -1);
+  KJ_ASSERT(index != -1, "certificate has no common name?");
+  X509_NAME_ENTRY* entry = X509_NAME_get_entry(subj, index);
+  KJ_ASSERT(entry != nullptr);
+  ASN1_STRING* data = X509_NAME_ENTRY_get_data(entry);
+  KJ_ASSERT(data != nullptr);
+
+  unsigned char* out = nullptr;
+  int len = ASN1_STRING_to_UTF8(&out, data);
+  KJ_ASSERT(len >= 0);
+  KJ_DEFER(OPENSSL_free(out));
+
+  return kj::heapString(reinterpret_cast<char*>(out), len);
 }
 
 }  // namespace kj

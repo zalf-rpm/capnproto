@@ -3673,7 +3673,7 @@ constexpr uint16_t Field::_capnpPrivate::pointerCount;
 constexpr ::capnp::Kind Field::_capnpPrivate::kind;
 #endif  // !CAPNP_LITE
 
-#ifndef _MSC_VER
+#if !defined(_MSC_VER) || defined(__clang__)
 constexpr  ::uint16_t Field::NO_DISCRIMINANT;
 #endif
 // Field::Slot

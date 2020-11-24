@@ -21,14 +21,12 @@
 
 #pragma once
 
-#if defined(__GNUC__) && !KJ_HEADER_WARNINGS
-#pragma GCC system_header
-#endif
-
 #include "memory.h"
 #include "array.h"
 #include "string.h"
 #include "windows-sanity.h"  // work-around macro conflict with `ERROR`
+
+KJ_BEGIN_HEADER
 
 namespace kj {
 
@@ -133,6 +131,12 @@ private:
 
   friend class ExceptionImpl;
 };
+
+struct CanceledException { };
+// This exception is thrown to force-unwind a stack in order to immediately cancel whatever that
+// stack was doing. It is used in the implementation of fibers in particular. Application code
+// should almost never catch this exception, unless you need to modify stack unwinding for some
+// reason. kj::runCatchingExceptions() does not catch it.
 
 StringPtr KJ_STRINGIFY(Exception::Type type);
 String KJ_STRINGIFY(const Exception& e);
@@ -250,7 +254,7 @@ KJ_NOINLINE void throwRecoverableException(kj::Exception&& exception, uint ignor
 namespace _ { class Runnable; }
 
 template <typename Func>
-Maybe<Exception> runCatchingExceptions(Func&& func) noexcept;
+Maybe<Exception> runCatchingExceptions(Func&& func);
 // Executes the given function (usually, a lambda returning nothing) catching any exceptions that
 // are thrown.  Returns the Exception if there was one, or null if the operation completed normally.
 // Non-KJ exceptions will be wrapped.
@@ -297,7 +301,7 @@ public:
 template <typename Func>
 class RunnableImpl: public Runnable {
 public:
-  RunnableImpl(Func&& func): func(kj::mv(func)) {}
+  RunnableImpl(Func&& func): func(kj::fwd<Func>(func)) {}
   void run() override {
     func();
   }
@@ -305,13 +309,13 @@ private:
   Func func;
 };
 
-Maybe<Exception> runCatchingExceptions(Runnable& runnable) noexcept;
+Maybe<Exception> runCatchingExceptions(Runnable& runnable);
 
 }  // namespace _ (private)
 
 template <typename Func>
-Maybe<Exception> runCatchingExceptions(Func&& func) noexcept {
-  _::RunnableImpl<Decay<Func>> runnable(kj::fwd<Func>(func));
+Maybe<Exception> runCatchingExceptions(Func&& func) {
+  _::RunnableImpl<Func> runnable(kj::fwd<Func>(func));
   return _::runCatchingExceptions(runnable);
 }
 
@@ -381,4 +385,38 @@ kj::String getCaughtExceptionType();
 // for the purpose of error logging. This function is best-effort; on some platforms it may simply
 // return "(unknown)".
 
+#if !KJ_NO_EXCEPTIONS
+
+class InFlightExceptionIterator {
+  // A class that can be used to iterate over exceptions that are in-flight in the current thread,
+  // meaning they are either uncaught, or caught by a catch block that is current executing.
+  //
+  // This is meant for debugging purposes, and the results are best-effort. The C++ standard
+  // library does not provide any way to inspect uncaught exceptions, so this class can only
+  // discover KJ exceptions thrown using throwFatalException() or throwRecoverableException().
+  // All KJ code uses those two functions to throw exceptions, but if your own code uses a bare
+  // `throw`, or if the standard library throws an exception, these cannot be inspected.
+  //
+  // This class is safe to use in a signal handler.
+
+public:
+  InFlightExceptionIterator();
+
+  Maybe<const Exception&> next();
+
+private:
+  const Exception* ptr;
+};
+
+#endif  // !KJ_NO_EXCEPTIONS
+
+kj::ArrayPtr<void* const> computeRelativeTrace(
+    kj::ArrayPtr<void* const> trace, kj::ArrayPtr<void* const> relativeTo);
+// Given two traces expected to have started from the same root, try to find the part of `trace`
+// that is different from `relativeTo`, considering that either or both traces might be truncated.
+//
+// This is useful for debugging, when reporting several related traces at once.
+
 }  // namespace kj
+
+KJ_END_HEADER

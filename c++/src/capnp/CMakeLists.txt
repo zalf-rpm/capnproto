@@ -10,6 +10,7 @@ set(capnp_sources_lite
   any.c++
   message.c++
   schema.capnp.c++
+  stream.capnp.c++
   serialize.c++
   serialize-packed.c++
 )
@@ -40,6 +41,7 @@ set(capnp_headers
   dynamic.h
   schema.h
   schema.capnp.h
+  stream.capnp.h
   schema-lite.h
   schema-loader.h
   schema-parser.h
@@ -52,9 +54,13 @@ set(capnp_headers
   generated-header-support.h
   raw-schema.h
 )
+set(capnp_compat_headers
+  compat/std-iterator.h
+)
 set(capnp_schemas
   c++.capnp
   schema.capnp
+  stream.capnp
 )
 add_library(capnp ${capnp_sources})
 add_library(CapnProto::capnp ALIAS capnp)
@@ -68,6 +74,7 @@ target_include_directories(capnp INTERFACE
 set_target_properties(capnp PROPERTIES VERSION ${VERSION})
 install(TARGETS capnp ${INSTALL_TARGETS_DEFAULT_ARGS})
 install(FILES ${capnp_headers} ${capnp_schemas} DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/capnp")
+install(FILES ${capnp_compat_headers} DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/capnp/compat")
 
 set(capnp-rpc_sources
   serialize-async.c++
@@ -137,6 +144,7 @@ set(capnpc_sources
   compiler/lexer.c++
   compiler/grammar.capnp.c++
   compiler/parser.c++
+  compiler/generics.c++
   compiler/node-translator.c++
   compiler/compiler.c++
   schema-parser.c++
@@ -160,6 +168,9 @@ if(NOT CAPNP_LITE)
   set_target_properties(capnp_tool PROPERTIES OUTPUT_NAME capnp)
   set_target_properties(capnp_tool PROPERTIES CAPNP_INCLUDE_DIRECTORY
     $<JOIN:$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>,$<INSTALL_INTERFACE:${CMAKE_INSTALL_BINDIR}/..>>
+  )
+  set_target_properties(capnp_tool PROPERTIES
+    COMPILE_DEFINITIONS CAPNP_INCLUDE_DIR=\"${CMAKE_INSTALL_FULL_INCLUDEDIR}\"
   )
 
   add_executable(capnpc_cpp

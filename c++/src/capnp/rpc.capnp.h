@@ -21,10 +21,12 @@
 #include <capnp/generated-header-support.h>
 #include <kj/windows-sanity.h>
 
-#if CAPNP_VERSION != 8000
+#if CAPNP_VERSION != 9000
 #error "Version mismatch between generated code and library headers.  You must use the same version of the Cap'n Proto compiler and library."
 #endif
 
+
+CAPNP_BEGIN_HEADER
 
 namespace capnp {
 namespace schemas {
@@ -2043,6 +2045,8 @@ public:
   inline bool hasThirdPartyHosted() const;
   inline  ::capnp::rpc::ThirdPartyCapDescriptor::Reader getThirdPartyHosted() const;
 
+  inline  ::uint8_t getAttachedFd() const;
+
 private:
   ::capnp::_::StructReader _reader;
   template <typename, ::capnp::Kind>
@@ -2103,6 +2107,9 @@ public:
   inline  ::capnp::rpc::ThirdPartyCapDescriptor::Builder initThirdPartyHosted();
   inline void adoptThirdPartyHosted(::capnp::Orphan< ::capnp::rpc::ThirdPartyCapDescriptor>&& value);
   inline ::capnp::Orphan< ::capnp::rpc::ThirdPartyCapDescriptor> disownThirdPartyHosted();
+
+  inline  ::uint8_t getAttachedFd();
+  inline void setAttachedFd( ::uint8_t value);
 
 private:
   ::capnp::_::StructBuilder _builder;
@@ -4685,6 +4692,20 @@ inline ::capnp::Orphan< ::capnp::rpc::ThirdPartyCapDescriptor> CapDescriptor::Bu
       ::capnp::bounded<0>() * ::capnp::POINTERS));
 }
 
+inline  ::uint8_t CapDescriptor::Reader::getAttachedFd() const {
+  return _reader.getDataField< ::uint8_t>(
+      ::capnp::bounded<2>() * ::capnp::ELEMENTS, 255u);
+}
+
+inline  ::uint8_t CapDescriptor::Builder::getAttachedFd() {
+  return _builder.getDataField< ::uint8_t>(
+      ::capnp::bounded<2>() * ::capnp::ELEMENTS, 255u);
+}
+inline void CapDescriptor::Builder::setAttachedFd( ::uint8_t value) {
+  _builder.setDataField< ::uint8_t>(
+      ::capnp::bounded<2>() * ::capnp::ELEMENTS, value, 255u);
+}
+
 inline  ::uint32_t PromisedAnswer::Reader::getQuestionId() const {
   return _reader.getDataField< ::uint32_t>(
       ::capnp::bounded<0>() * ::capnp::ELEMENTS);
@@ -4909,4 +4930,6 @@ inline void Exception::Builder::setType( ::capnp::rpc::Exception::Type value) {
 
 }  // namespace
 }  // namespace
+
+CAPNP_END_HEADER
 

@@ -21,12 +21,10 @@
 
 #pragma once
 
-#if defined(__GNUC__) && !KJ_HEADER_WARNINGS
-#pragma GCC system_header
-#endif
-
 #include "table.h"
 #include "hash.h"
+
+KJ_BEGIN_HEADER
 
 namespace kj {
 
@@ -125,7 +123,7 @@ private:
       return e.key == key;
     }
     template <typename KeyLike>
-    inline bool hashCode(KeyLike&& key) const {
+    inline auto hashCode(KeyLike&& key) const {
       return kj::hashCode(key);
     }
   };
@@ -254,7 +252,7 @@ public:
   template <typename T, typename U>
   inline bool matches(T& a, U& b) const { return a == b; }
   template <typename KeyLike>
-  inline bool hashCode(KeyLike&& key) const {
+  inline auto hashCode(KeyLike&& key) const {
     return kj::hashCode(key);
   }
 };
@@ -402,7 +400,9 @@ void HashMap<Key, Value>::erase(Entry& entry) {
 template <typename Key, typename Value>
 template <typename Predicate, typename>
 size_t HashMap<Key, Value>::eraseAll(Predicate&& predicate) {
-  return table.eraseAll(kj::fwd<Predicate>(predicate));
+  return table.eraseAll([&](Entry& entry) {
+    return predicate(entry.key, entry.value);
+  });
 }
 
 // -----------------------------------------------------------------------------
@@ -524,7 +524,9 @@ void TreeMap<Key, Value>::erase(Entry& entry) {
 template <typename Key, typename Value>
 template <typename Predicate, typename>
 size_t TreeMap<Key, Value>::eraseAll(Predicate&& predicate) {
-  return table.eraseAll(kj::fwd<Predicate>(predicate));
+  return table.eraseAll([&](Entry& entry) {
+    return predicate(entry.key, entry.value);
+  });
 }
 
 template <typename Key, typename Value>
@@ -534,3 +536,5 @@ size_t TreeMap<Key, Value>::eraseRange(K1&& k1, K2&& k2) {
 }
 
 } // namespace kj
+
+KJ_END_HEADER

@@ -21,10 +21,6 @@
 
 #pragma once
 
-#if defined(__GNUC__) && !defined(CAPNP_HEADER_WARNINGS)
-#pragma GCC system_header
-#endif
-
 #ifndef CAPNP_PRIVATE
 #error "This header is only meant to be included by Cap'n Proto's own source code."
 #endif
@@ -42,6 +38,8 @@
 #if !CAPNP_LITE
 #include "capability.h"
 #endif  // !CAPNP_LITE
+
+CAPNP_BEGIN_HEADER
 
 namespace capnp {
 
@@ -230,6 +228,8 @@ public:
   ~ReaderArena() noexcept(false);
   KJ_DISALLOW_COPY(ReaderArena);
 
+  size_t sizeInWords();
+
   // implements Arena ------------------------------------------------
   SegmentReader* tryGetSegment(SegmentId id) override;
   void reportReadLimitReached() override;
@@ -264,6 +264,8 @@ public:
   ~BuilderArena() noexcept(false);
   KJ_DISALLOW_COPY(BuilderArena);
 
+  size_t sizeInWords();
+
   inline SegmentBuilder* getRootSegment() { return &segment0; }
 
   kj::ArrayPtr<const kj::ArrayPtr<const word>> getSegmentsForOutput();
@@ -286,6 +288,10 @@ public:
     //   deprecate this usage and instead define a new helper type for this exact purpose.
 
     return &localCapTable;
+  }
+
+  kj::Own<_::CapTableBuilder> releaseLocalCapTable() {
+    return kj::heap<LocalCapTable>(kj::mv(localCapTable));
   }
 
   SegmentBuilder* getSegment(SegmentId id);
@@ -321,13 +327,13 @@ private:
   MessageBuilder* message;
   ReadLimiter dummyLimiter;
 
-  class LocalCapTable: public CapTableBuilder {
-#if !CAPNP_LITE
+  class LocalCapTable final: public CapTableBuilder {
   public:
     kj::Maybe<kj::Own<ClientHook>> extractCap(uint index) override;
     uint injectCap(kj::Own<ClientHook>&& cap) override;
     void dropCap(uint index) override;
 
+#if !CAPNP_LITE
   private:
     kj::Vector<kj::Maybe<kj::Own<ClientHook>>> capTable;
 #endif // ! CAPNP_LITE
@@ -491,3 +497,5 @@ inline bool SegmentBuilder::tryExtend(word* from, word* to) {
 
 }  // namespace _ (private)
 }  // namespace capnp
+
+CAPNP_END_HEADER

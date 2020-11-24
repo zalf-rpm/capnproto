@@ -21,14 +21,12 @@
 
 #pragma once
 
-#if defined(__GNUC__) && !KJ_HEADER_WARNINGS
-#pragma GCC system_header
-#endif
-
 #include "async.h"
 #include "function.h"
 #include "thread.h"
 #include "timer.h"
+
+KJ_BEGIN_HEADER
 
 struct sockaddr;
 
@@ -151,15 +149,18 @@ public:
 };
 
 class AsyncCapabilityStream: public AsyncIoStream {
-  // An AsyncIoStream that also allows sending and receiving new connections or other kinds of
-  // capabilities, in addition to simple data.
+  // An AsyncIoStream that also allows transmitting new stream objects and file descirptors
+  // (capabilities, in the object-capability model sense), in addition to bytes.
   //
-  // For correct functioning, a protocol must be designed such that the receiver knows when to
-  // expect a capability transfer. The receiver must not read() when a capability is expected, and
-  // must not receiveStream() when data is expected -- if it does, an exception may be thrown or
-  // invalid data may be returned. This implies that data sent over an AsyncCapabilityStream must
-  // be framed such that the receiver knows exactly how many bytes to read before receiving a
-  // capability.
+  // Capabilities can be attached to bytes when they are written. On the receiving end, the read()
+  // that receives the first byte of such a message will also receive the capabilities.
+  //
+  // Note that AsyncIoStream's regular byte-oriented methods can be used on AsyncCapabilityStream,
+  // with the effect of silently dropping any capabilities attached to the respective bytes. E.g.
+  // using `AsyncIoStream::tryRead()` to read bytes that had been sent with `writeWithFds()` will
+  // silently drop the FDs (closing them if appropriate). Also note that puming a stream with
+  // `pumpTo()` always drops all capabilities attached to the pumped data. (TODO(someday): Do we
+  // want a version of pumpTo() that preserves capabilities?)
   //
   // On Unix, KJ provides an implementation based on Unix domain sockets and file descriptor
   // passing via SCM_RIGHTS. Due to the nature of SCM_RIGHTS, if the application accidentally
@@ -167,23 +168,65 @@ class AsyncCapabilityStream: public AsyncIoStream {
   // and the capability will be discarded. Of course, an application should not depend on this
   // behavior; it should avoid read()ing through a capability.
   //
-  // KJ does not provide any implementation of this type on Windows, as there's no obvious
-  // implementation there. Handle passing on Windows requires at least one of the processes
+  // KJ does not provide any inter-process implementation of this type on Windows, as there's no
+  // obvious implementation there. Handle passing on Windows requires at least one of the processes
   // involved to have permission to modify the other's handle table, which is effectively full
   // control. Handle passing between mutually non-trusting processes would require a trusted
   // broker process to facilitate. One could possibly implement this type in terms of such a
   // broker, or in terms of direct handle passing if at least one process trusts the other.
 
 public:
+  virtual Promise<void> writeWithFds(ArrayPtr<const byte> data,
+                                     ArrayPtr<const ArrayPtr<const byte>> moreData,
+                                     ArrayPtr<const int> fds) = 0;
+  Promise<void> writeWithFds(ArrayPtr<const byte> data,
+                             ArrayPtr<const ArrayPtr<const byte>> moreData,
+                             ArrayPtr<const AutoCloseFd> fds);
+  // Write some data to the stream with some file descriptors attached to it.
+  //
+  // The maximum number of FDs that can be sent at a time is usually subject to an OS-imposed
+  // limit. On Linux, this is 253. In practice, sending more than a handful of FDs at once is
+  // probably a bad idea.
+
+  struct ReadResult {
+    size_t byteCount;
+    size_t capCount;
+  };
+
+  virtual Promise<ReadResult> tryReadWithFds(void* buffer, size_t minBytes, size_t maxBytes,
+                                             AutoCloseFd* fdBuffer, size_t maxFds) = 0;
+  // Read data from the stream that may have file descriptors attached. Any attached descriptors
+  // will be placed in `fdBuffer`. If multiple bundles of FDs are encountered in the course of
+  // reading the amount of data requested by minBytes/maxBytes, then they will be concatenated. If
+  // more FDs are received than fit in the buffer, then the excess will be discarded and closed --
+  // this behavior, while ugly, is important to defend against denial-of-service attacks that may
+  // fill up the FD table with garbage. Applications must think carefully about how many FDs they
+  // really need to receive at once and set a well-defined limit.
+
+  virtual Promise<void> writeWithStreams(ArrayPtr<const byte> data,
+                                         ArrayPtr<const ArrayPtr<const byte>> moreData,
+                                         Array<Own<AsyncCapabilityStream>> streams) = 0;
+  virtual Promise<ReadResult> tryReadWithStreams(
+      void* buffer, size_t minBytes, size_t maxBytes,
+      Own<AsyncCapabilityStream>* streamBuffer, size_t maxStreams) = 0;
+  // Like above, but passes AsyncCapabilityStream objects. The stream implementations must be from
+  // the same AsyncIoProvider.
+
+  // ---------------------------------------------------------------------------
+  // Helpers for sending individual capabilities.
+  //
+  // These are equivalent to the above methods with the constraint that only one FD is
+  // sent/received at a time and the corresponding data is a single zero-valued byte.
+
   Promise<Own<AsyncCapabilityStream>> receiveStream();
-  virtual Promise<Maybe<Own<AsyncCapabilityStream>>> tryReceiveStream() = 0;
-  virtual Promise<void> sendStream(Own<AsyncCapabilityStream> stream) = 0;
-  // Transfer a stream.
+  Promise<Maybe<Own<AsyncCapabilityStream>>> tryReceiveStream();
+  Promise<void> sendStream(Own<AsyncCapabilityStream> stream);
+  // Transfer a single stream.
 
   Promise<AutoCloseFd> receiveFd();
-  virtual Promise<Maybe<AutoCloseFd>> tryReceiveFd();
-  virtual Promise<void> sendFd(int fd);
-  // Transfer a raw file descriptor. Default implementation throws UNIMPLEMENTED.
+  Promise<Maybe<AutoCloseFd>> tryReceiveFd();
+  Promise<void> sendFd(int fd);
+  // Transfer a single raw file descriptor.
 };
 
 struct OneWayPipe {
@@ -217,6 +260,16 @@ struct CapabilityPipe {
   Own<AsyncCapabilityStream> ends[2];
 };
 
+CapabilityPipe newCapabilityPipe();
+// Like newTwoWayPipe() but creates a capability pipe.
+//
+// The requirement of `writeWithStreams()` that "The stream implementations must be from the same
+// AsyncIoProvider." does not apply to this pipe; any kind of AsyncCapabilityStream implementation
+// is supported.
+//
+// This implementation does not know how to convert streams to FDs or vice versa; if you write FDs
+// you must read FDs, and if you write streams you must read streams.
+
 struct Tee {
   // Two AsyncInputStreams which each read the same data from some wrapped inner AsyncInputStream.
 
@@ -241,12 +294,119 @@ Tee newTee(Own<AsyncInputStream> input, uint64_t limit = kj::maxValue);
 //
 // It is recommended that you use a more conservative value for `limit` than the default.
 
+Own<AsyncOutputStream> newPromisedStream(Promise<Own<AsyncOutputStream>> promise);
+Own<AsyncIoStream> newPromisedStream(Promise<Own<AsyncIoStream>> promise);
+// Constructs an Async*Stream which waits for a promise to resolve, then forwards all calls to the
+// promised stream.
+
+// =======================================================================================
+// Authenticated streams
+
+class PeerIdentity {
+  // PeerIdentity provides information about a connecting client. Various subclasses exist to
+  // address different network types.
+public:
+  virtual kj::String toString() = 0;
+  // Returns a human-readable string identifying the peer. Where possible, this string will be
+  // in the same format as the addresses you could pass to `kj::Network::parseAddress()`. However,
+  // only certain subclasses of `PeerIdentity` guarantee this property.
+};
+
+struct AuthenticatedStream {
+  // A pair of an `AsyncIoStream` and a `PeerIdentity`. This is used as the return type of
+  // `NetworkAddress::connectAuthenticated()` and `ConnectionReceiver::acceptAuthenticated()`.
+
+  Own<AsyncIoStream> stream;
+  // The byte stream.
+
+  Own<PeerIdentity> peerIdentity;
+  // An object indicating who is at the other end of the stream.
+  //
+  // Different subclasses of `PeerIdentity` are used in different situations:
+  // - TCP connections will use NetworkPeerIdentity, which gives the network address of the client.
+  // - Local (unix) socket connections will use LocalPeerIdentity, which identifies the UID
+  //   and PID of the process that initiated the connection.
+  // - TLS connections will use TlsPeerIdentity which provides details of the client certificate,
+  //   if any was provided.
+  // - When no meaningful peer identity can be provided, `UnknownPeerIdentity` is returned.
+  //
+  // Implementations of `Network`, `ConnectionReceiver`, `NetworkAddress`, etc. should document the
+  // specific assumptions the caller can make about the type of `PeerIdentity`s used, allowing for
+  // identities to be statically downcast if the right conditions are met. In the absence of
+  // documented promises, RTTI may be needed to query the type.
+};
+
+class NetworkPeerIdentity: public PeerIdentity {
+  // PeerIdentity used for network protocols like TCP/IP. This identifies the remote peer.
+  //
+  // This is only "authenticated" to the extent that we know data written to the stream will be
+  // routed to the given address. This does not preclude the possibility of man-in-the-middle
+  // attacks by attackers who are able to manipulate traffic along the route.
+public:
+  virtual NetworkAddress& getAddress() = 0;
+  // Obtain the peer's address as a NetworkAddress object. The returned reference's lifetime is the
+  // same as the `NetworkPeerIdentity`, but you can always call `clone()` on it to get a copy that
+  // lives longer.
+
+  static kj::Own<NetworkPeerIdentity> newInstance(kj::Own<NetworkAddress> addr);
+  // Construct an instance of this interface wrapping the given address.
+};
+
+class LocalPeerIdentity: public PeerIdentity {
+  // PeerIdentity used for connections between processes on the local machine -- in particular,
+  // Unix sockets.
+  //
+  // (This interface probably isn't useful on Windows.)
+public:
+  struct Credentials {
+    kj::Maybe<int> pid;
+    kj::Maybe<uint> uid;
+
+    // We don't cover groups at present because some systems produce a list of groups while others
+    // only provide the peer's main group, the latter being pretty useless.
+  };
+
+  virtual Credentials getCredentials() = 0;
+  // Get the PID and UID of the peer process, if possible.
+  //
+  // Either ID may be null if the peer could not be identified. Some operating systems do not
+  // support retrieving these credentials, or can only provide one or the other. Some situations
+  // (like user and PID namespaces on Linux) may also make it impossible to represent the peer's
+  // credentials accurately.
+  //
+  // Note the meaning here can be subtle. Multiple processes can potentially have the socket in
+  // their file descriptor tables. The identified process is the one who called `connect()` or
+  // `listen()`.
+  //
+  // On Linux this is implemented with SO_PEERCRED.
+
+  static kj::Own<LocalPeerIdentity> newInstance(Credentials creds);
+  // Construct an instance of this interface wrapping the given credentials.
+};
+
+class UnknownPeerIdentity: public PeerIdentity {
+public:
+  static kj::Own<UnknownPeerIdentity> newInstance();
+  // Get an instance of this interface. This actually always returns the same instance with no
+  // memory allocation.
+};
+
+// =======================================================================================
+// Accepting connections
+
 class ConnectionReceiver {
   // Represents a server socket listening on a port.
 
 public:
   virtual Promise<Own<AsyncIoStream>> accept() = 0;
   // Accept the next incoming connection.
+
+  virtual Promise<AuthenticatedStream> acceptAuthenticated();
+  // Accept the next incoming connection, and also provide a PeerIdentity with any information
+  // about the client.
+  //
+  // For backwards-compatibility, the default implementation of this method calls `accept()` and
+  // then adds `UnknownPeerIdentity`.
 
   virtual uint getPort() = 0;
   // Gets the port number, if applicable (i.e. if listening on IP).  This is useful if you didn't
@@ -255,6 +415,7 @@ public:
 
   virtual void getsockopt(int level, int option, void* value, uint* length);
   virtual void setsockopt(int level, int option, const void* value, uint length);
+  virtual void getsockname(struct sockaddr* addr, uint* length);
   // Same as the methods of AsyncIoStream.
 };
 
@@ -372,6 +533,14 @@ public:
   // Make a new connection to this address.
   //
   // The address must not be a wildcard ("*").  If it is an IP address, it must have a port number.
+
+  virtual Promise<AuthenticatedStream> connectAuthenticated();
+  // Connect to the address and return both the connection and information about the peer identity.
+  // This is especially useful when using TLS, to get certificate details.
+  //
+  // For backwards-compatibility, the default implementation of this method calls `connect()` and
+  // then uses a `NetworkPeerIdentity` wrapping a clone of this `NetworkAddress` -- which is not
+  // particularly useful.
 
   virtual Own<ConnectionReceiver> listen() = 0;
   // Listen for incoming connections on this address.
@@ -749,6 +918,11 @@ public:
   Promise<Own<AsyncIoStream>> accept() override;
   uint getPort() override;
 
+  Promise<AuthenticatedStream> acceptAuthenticated() override;
+  // Always produces UnknownIdentity. Capability-based security patterns should not rely on
+  // authenticating peers; the other end of the capability stream should only be given to
+  // authorized parties in the first place.
+
 private:
   AsyncCapabilityStream& inner;
 };
@@ -757,15 +931,18 @@ class CapabilityStreamNetworkAddress final: public NetworkAddress {
   // Trivial wrapper which allows an AsyncCapabilityStream to act as a NetworkAddress.
   //
   // connect() is implemented by calling provider.newCapabilityPipe(), sending one end over the
-  // original capability stream, and returning the other end.
+  // original capability stream, and returning the other end. If `provider` is null, then the
+  // global kj::newCapabilityPipe() will be used, but this ONLY works if `inner` itself is agnostic
+  // to the type of streams it receives, e.g. because it was also created using
+  // kj::NewCapabilityPipe().
   //
   // listen().accept() is implemented by receiving new streams over the original stream.
   //
-  // Note that clone() dosen't work (due to ownership issues) and toString() returns a static
+  // Note that clone() doesn't work (due to ownership issues) and toString() returns a static
   // string.
 
 public:
-  CapabilityStreamNetworkAddress(AsyncIoProvider& provider, AsyncCapabilityStream& inner)
+  CapabilityStreamNetworkAddress(kj::Maybe<AsyncIoProvider&> provider, AsyncCapabilityStream& inner)
       : provider(provider), inner(inner) {}
 
   Promise<Own<AsyncIoStream>> connect() override;
@@ -774,8 +951,13 @@ public:
   Own<NetworkAddress> clone() override;
   String toString() override;
 
+  Promise<AuthenticatedStream> connectAuthenticated() override;
+  // Always produces UnknownIdentity. Capability-based security patterns should not rely on
+  // authenticating peers; the other end of the capability stream should only be given to
+  // authorized parties in the first place.
+
 private:
-  AsyncIoProvider& provider;
+  kj::Maybe<AsyncIoProvider&> provider;
   AsyncCapabilityStream& inner;
 };
 
@@ -804,3 +986,5 @@ inline ArrayPtr<const T> AncillaryMessage::asArray() {
 }
 
 }  // namespace kj
+
+KJ_END_HEADER

@@ -24,13 +24,19 @@
 #include "http.h"
 #include <kj/debug.h>
 #include <kj/test.h>
+#include <kj/encoding.h>
 #include <map>
 
 #if KJ_HTTP_TEST_USE_OS_PIPE
 // Run the test using OS-level socketpairs. (See http-socketpair-test.c++.)
 #define KJ_HTTP_TEST_SETUP_IO \
   auto io = kj::setupAsyncIo(); \
-  auto& waitScope = io.waitScope
+  auto& waitScope KJ_UNUSED = io.waitScope
+#define KJ_HTTP_TEST_SETUP_LOOPBACK_LISTENER_AND_ADDR \
+  auto listener = io.provider->getNetwork().parseAddress("localhost", 0) \
+      .wait(waitScope)->listen(); \
+  auto addr = io.provider->getNetwork().parseAddress("localhost", listener->getPort()) \
+      .wait(waitScope)
 #define KJ_HTTP_TEST_CREATE_2PIPE \
   io.provider->newTwoWayPipe()
 #else
@@ -38,6 +44,10 @@
 #define KJ_HTTP_TEST_SETUP_IO \
   kj::EventLoop eventLoop; \
   kj::WaitScope waitScope(eventLoop)
+#define KJ_HTTP_TEST_SETUP_LOOPBACK_LISTENER_AND_ADDR \
+  auto capPipe = newCapabilityPipe(); \
+  auto listener = kj::heap<kj::CapabilityStreamConnectionReceiver>(*capPipe.ends[0]); \
+  auto addr = kj::heap<kj::CapabilityStreamNetworkAddress>(nullptr, *capPipe.ends[1])
 #define KJ_HTTP_TEST_CREATE_2PIPE \
   kj::newTwoWayPipe()
 #endif
@@ -125,8 +135,9 @@ KJ_TEST("HttpHeaders::parseRequest") {
       "Content-Length: 123\r\n"
       "DATE:     early\r\n"
       "other-Header: yep\r\n"
+      "with.dots: sure\r\n"
       "\r\n");
-  auto result = KJ_ASSERT_NONNULL(headers.tryParseRequest(text.asArray()));
+  auto result = headers.tryParseRequest(text.asArray()).get<HttpHeaders::Request>();
 
   KJ_EXPECT(result.method == HttpMethod::POST);
   KJ_EXPECT(result.url == "/some/path");
@@ -142,12 +153,13 @@ KJ_TEST("HttpHeaders::parseRequest") {
   headers.forEach([&](kj::StringPtr name, kj::StringPtr value) {
     KJ_EXPECT(unpackedHeaders.insert(std::make_pair(name, value)).second);
   });
-  KJ_EXPECT(unpackedHeaders.size() == 5);
+  KJ_EXPECT(unpackedHeaders.size() == 6);
   KJ_EXPECT(unpackedHeaders["Content-Length"] == "123");
   KJ_EXPECT(unpackedHeaders["Host"] == "example.com");
   KJ_EXPECT(unpackedHeaders["Date"] == "early");
   KJ_EXPECT(unpackedHeaders["Foo-Bar"] == "Baz");
   KJ_EXPECT(unpackedHeaders["other-Header"] == "yep");
+  KJ_EXPECT(unpackedHeaders["with.dots"] == "sure");
 
   KJ_EXPECT(headers.serializeRequest(result.method, result.url) ==
       "POST /some/path HTTP/1.1\r\n"
@@ -156,6 +168,7 @@ KJ_TEST("HttpHeaders::parseRequest") {
       "Date: early\r\n"
       "Foo-Bar: Baz\r\n"
       "other-Header: yep\r\n"
+      "with.dots: sure\r\n"
       "\r\n");
 }
 
@@ -176,7 +189,7 @@ KJ_TEST("HttpHeaders::parseResponse") {
       "DATE:     early\r\n"
       "other-Header: yep\r\n"
       "\r\n");
-  auto result = KJ_ASSERT_NONNULL(headers.tryParseResponse(text.asArray()));
+  auto result = headers.tryParseResponse(text.asArray()).get<HttpHeaders::Response>();
 
   KJ_EXPECT(result.statusCode == 418);
   KJ_EXPECT(result.statusText == "I'm a teapot");
@@ -215,40 +228,72 @@ KJ_TEST("HttpHeaders parse invalid") {
   HttpHeaders headers(*table);
 
   // NUL byte in request.
-  KJ_EXPECT(headers.tryParseRequest(kj::heapString(
-      "POST  \0 /some/path \t   HTTP/1.1\r\n"
-      "Foo-BaR: Baz\r\n"
-      "Host: example.com\r\n"
-      "DATE:     early\r\n"
-      "other-Header: yep\r\n"
-      "\r\n")) == nullptr);
+  {
+    auto input = kj::heapString(
+        "POST  \0 /some/path \t   HTTP/1.1\r\n"
+        "Foo-BaR: Baz\r\n"
+        "Host: example.com\r\n"
+        "DATE:     early\r\n"
+        "other-Header: yep\r\n"
+        "\r\n");
+
+    auto protocolError = headers.tryParseRequest(input).get<HttpHeaders::ProtocolError>();
+
+    KJ_EXPECT(protocolError.description == "ERROR: Request headers have no terminal newline.",
+        protocolError.description);
+    KJ_EXPECT(protocolError.rawContent.asChars() == input);
+  }
 
   // Control character in header name.
-  KJ_EXPECT(headers.tryParseRequest(kj::heapString(
-      "POST   /some/path \t   HTTP/1.1\r\n"
-      "Foo-BaR: Baz\r\n"
-      "Cont\001ent-Length: 123\r\n"
-      "DATE:     early\r\n"
-      "other-Header: yep\r\n"
-      "\r\n")) == nullptr);
+  {
+    auto input = kj::heapString(
+        "POST   /some/path \t   HTTP/1.1\r\n"
+        "Foo-BaR: Baz\r\n"
+        "Cont\001ent-Length: 123\r\n"
+        "DATE:     early\r\n"
+        "other-Header: yep\r\n"
+        "\r\n");
+
+    auto protocolError = headers.tryParseRequest(input).get<HttpHeaders::ProtocolError>();
+
+    KJ_EXPECT(protocolError.description == "ERROR: The headers sent by your client are not valid.",
+        protocolError.description);
+    KJ_EXPECT(protocolError.rawContent.asChars() == input);
+  }
 
   // Separator character in header name.
-  KJ_EXPECT(headers.tryParseRequest(kj::heapString(
-      "POST   /some/path \t   HTTP/1.1\r\n"
-      "Foo-BaR: Baz\r\n"
-      "Host: example.com\r\n"
-      "DATE/:     early\r\n"
-      "other-Header: yep\r\n"
-      "\r\n")) == nullptr);
+  {
+     auto input = kj::heapString(
+        "POST   /some/path \t   HTTP/1.1\r\n"
+        "Foo-BaR: Baz\r\n"
+        "Host: example.com\r\n"
+        "DATE/:     early\r\n"
+        "other-Header: yep\r\n"
+        "\r\n");
+
+    auto protocolError = headers.tryParseRequest(input).get<HttpHeaders::ProtocolError>();
+
+    KJ_EXPECT(protocolError.description == "ERROR: The headers sent by your client are not valid.",
+        protocolError.description);
+    KJ_EXPECT(protocolError.rawContent.asChars() == input);
+  }
 
   // Response status code not numeric.
-  KJ_EXPECT(headers.tryParseResponse(kj::heapString(
+  {
+     auto input = kj::heapString(
       "HTTP/1.1\t\t  abc\t    I'm a teapot\r\n"
       "Foo-BaR: Baz\r\n"
       "Host: example.com\r\n"
       "DATE:     early\r\n"
       "other-Header: yep\r\n"
-      "\r\n")) == nullptr);
+      "\r\n");
+
+    auto protocolError = headers.tryParseRequest(input).get<HttpHeaders::ProtocolError>();
+
+    KJ_EXPECT(protocolError.description == "ERROR: Unrecognized request method.",
+        protocolError.description);
+    KJ_EXPECT(protocolError.rawContent.asChars() == input);
+  }
 }
 
 KJ_TEST("HttpHeaders validation") {
@@ -272,6 +317,29 @@ KJ_TEST("HttpHeaders validation") {
 
   KJ_EXPECT_THROW_MESSAGE("invalid header value", headers.set(HttpHeaderId::HOST, "in\nvalid"));
   KJ_EXPECT_THROW_MESSAGE("invalid header value", headers.add("Valid-Name", "in\nvalid"));
+}
+
+KJ_TEST("HttpHeaders Set-Cookie handling") {
+  HttpHeaderTable::Builder builder;
+  auto hCookie = builder.add("Cookie");
+  auto hSetCookie = builder.add("Set-Cookie");
+  auto table = builder.build();
+
+  HttpHeaders headers(*table);
+  headers.set(hCookie, "Foo");
+  headers.add("Cookie", "Bar");
+  headers.add("Cookie", "Baz");
+  headers.set(hSetCookie, "Foo");
+  headers.add("Set-Cookie", "Bar");
+  headers.add("Set-Cookie", "Baz");
+
+  auto text = headers.toString();
+  KJ_EXPECT(text ==
+      "Cookie: Foo, Bar, Baz\r\n"
+      "Set-Cookie: Foo\r\n"
+      "Set-Cookie: Bar\r\n"
+      "Set-Cookie: Baz\r\n"
+      "\r\n", text);
 }
 
 // =======================================================================================
@@ -802,6 +870,36 @@ kj::ArrayPtr<const HttpResponseTestCase> responseTestCases() {
 
     {
       "HTTP/1.1 200 OK\r\n"
+      "Content-Type: text/plain\r\n"
+      "Transfer-Encoding: identity\r\n"
+      "Content-Length: foobar\r\n"  // intentionally wrong
+      "\r\n"
+      "baz qux",
+
+      200, "OK",
+      {{HttpHeaderId::CONTENT_TYPE, "text/plain"}},
+      nullptr, {"baz qux"},
+
+      HttpMethod::GET,
+      CLIENT_ONLY,   // Server never sends transfer-encoding: identity
+    },
+
+    {
+      "HTTP/1.1 200 OK\r\n"
+      "Content-Type: text/plain\r\n"
+      "\r\n"
+      "baz qux",
+
+      200, "OK",
+      {{HttpHeaderId::CONTENT_TYPE, "text/plain"}},
+      nullptr, {"baz qux"},
+
+      HttpMethod::GET,
+      CLIENT_ONLY,   // Server never sends non-delimited message
+    },
+
+    {
+      "HTTP/1.1 200 OK\r\n"
       "Content-Length: 123\r\n"
       "Content-Type: text/plain\r\n"
       "\r\n",
@@ -837,6 +935,34 @@ kj::ArrayPtr<const HttpResponseTestCase> responseTestCases() {
       uint64_t(0), {},
 
       HttpMethod::HEAD,
+    },
+
+    {
+      "HTTP/1.1 204 No Content\r\n"
+      "\r\n",
+
+      204, "No Content",
+      {},
+      uint64_t(0), {},
+    },
+
+    {
+      "HTTP/1.1 205 Reset Content\r\n"
+      "Content-Length: 0\r\n"
+      "\r\n",
+
+      205, "Reset Content",
+      {},
+      uint64_t(0), {},
+    },
+
+    {
+      "HTTP/1.1 304 Not Modified\r\n"
+      "\r\n",
+
+      304, "Not Modified",
+      {},
+      uint64_t(0), {},
     },
 
     {
@@ -912,6 +1038,10 @@ KJ_TEST("HttpClient canceled write") {
     memset(body.begin(), 0xcf, body.size());
 
     auto req = client->request(HttpMethod::POST, "/", HttpHeaders(table), uint64_t(4096));
+
+    // Note: This poll() forces the server to receive what was written so far. Otherwise,
+    //   cancelling the write below may in fact cancel the previous write as well.
+    KJ_EXPECT(!serverPromise.poll(waitScope));
 
     // Start a write and immediately cancel it.
     {
@@ -2051,6 +2181,10 @@ void testWebSocketClient(kj::WaitScope& waitScope, HttpHeaderTable& headerTable,
   }
 }
 
+inline kj::Promise<void> writeA(kj::AsyncOutputStream& out, kj::ArrayPtr<const byte> data) {
+  return out.write(data.begin(), data.size());
+}
+
 KJ_TEST("HttpClient WebSocket handshake") {
   KJ_HTTP_TEST_SETUP_IO;
   auto pipe = KJ_HTTP_TEST_CREATE_2PIPE;
@@ -2058,12 +2192,12 @@ KJ_TEST("HttpClient WebSocket handshake") {
   auto request = kj::str("GET /websocket", WEBSOCKET_REQUEST_HANDSHAKE);
 
   auto serverTask = expectRead(*pipe.ends[1], request)
-      .then([&]() { return pipe.ends[1]->write({asBytes(WEBSOCKET_RESPONSE_HANDSHAKE)}); })
-      .then([&]() { return pipe.ends[1]->write({WEBSOCKET_FIRST_MESSAGE_INLINE}); })
+      .then([&]() { return writeA(*pipe.ends[1], asBytes(WEBSOCKET_RESPONSE_HANDSHAKE)); })
+      .then([&]() { return writeA(*pipe.ends[1], WEBSOCKET_FIRST_MESSAGE_INLINE); })
       .then([&]() { return expectRead(*pipe.ends[1], WEBSOCKET_SEND_MESSAGE); })
-      .then([&]() { return pipe.ends[1]->write({WEBSOCKET_REPLY_MESSAGE}); })
+      .then([&]() { return writeA(*pipe.ends[1], WEBSOCKET_REPLY_MESSAGE); })
       .then([&]() { return expectRead(*pipe.ends[1], WEBSOCKET_SEND_CLOSE); })
-      .then([&]() { return pipe.ends[1]->write({WEBSOCKET_REPLY_CLOSE}); })
+      .then([&]() { return writeA(*pipe.ends[1], WEBSOCKET_REPLY_CLOSE); })
       .eagerlyEvaluate([](kj::Exception&& e) { KJ_LOG(ERROR, e); });
 
   HttpHeaderTable::Builder tableBuilder;
@@ -2088,9 +2222,9 @@ KJ_TEST("HttpClient WebSocket error") {
   auto request = kj::str("GET /websocket", WEBSOCKET_REQUEST_HANDSHAKE);
 
   auto serverTask = expectRead(*pipe.ends[1], request)
-      .then([&]() { return pipe.ends[1]->write({asBytes(WEBSOCKET_RESPONSE_HANDSHAKE_ERROR)}); })
+      .then([&]() { return writeA(*pipe.ends[1], asBytes(WEBSOCKET_RESPONSE_HANDSHAKE_ERROR)); })
       .then([&]() { return expectRead(*pipe.ends[1], request); })
-      .then([&]() { return pipe.ends[1]->write({asBytes(WEBSOCKET_RESPONSE_HANDSHAKE_ERROR)}); })
+      .then([&]() { return writeA(*pipe.ends[1], asBytes(WEBSOCKET_RESPONSE_HANDSHAKE_ERROR)); })
       .eagerlyEvaluate([](kj::Exception&& e) { KJ_LOG(ERROR, e); });
 
   HttpHeaderTable::Builder tableBuilder;
@@ -2141,13 +2275,13 @@ KJ_TEST("HttpServer WebSocket handshake") {
   auto listenTask = server.listenHttp(kj::mv(pipe.ends[0]));
 
   auto request = kj::str("GET /websocket", WEBSOCKET_REQUEST_HANDSHAKE);
-  pipe.ends[1]->write({request.asBytes()}).wait(waitScope);
+  writeA(*pipe.ends[1], request.asBytes()).wait(waitScope);
   expectRead(*pipe.ends[1], WEBSOCKET_RESPONSE_HANDSHAKE).wait(waitScope);
 
   expectRead(*pipe.ends[1], WEBSOCKET_FIRST_MESSAGE_INLINE).wait(waitScope);
-  pipe.ends[1]->write({WEBSOCKET_SEND_MESSAGE}).wait(waitScope);
+  writeA(*pipe.ends[1], WEBSOCKET_SEND_MESSAGE).wait(waitScope);
   expectRead(*pipe.ends[1], WEBSOCKET_REPLY_MESSAGE).wait(waitScope);
-  pipe.ends[1]->write({WEBSOCKET_SEND_CLOSE}).wait(waitScope);
+  writeA(*pipe.ends[1], WEBSOCKET_SEND_CLOSE).wait(waitScope);
   expectRead(*pipe.ends[1], WEBSOCKET_REPLY_CLOSE).wait(waitScope);
 
   listenTask.wait(waitScope);
@@ -2167,11 +2301,11 @@ KJ_TEST("HttpServer WebSocket handshake error") {
   auto listenTask = server.listenHttp(kj::mv(pipe.ends[0]));
 
   auto request = kj::str("GET /return-error", WEBSOCKET_REQUEST_HANDSHAKE);
-  pipe.ends[1]->write({request.asBytes()}).wait(waitScope);
+  writeA(*pipe.ends[1], request.asBytes()).wait(waitScope);
   expectRead(*pipe.ends[1], WEBSOCKET_RESPONSE_HANDSHAKE_ERROR).wait(waitScope);
 
   // Can send more requests!
-  pipe.ends[1]->write({request.asBytes()}).wait(waitScope);
+  writeA(*pipe.ends[1], request.asBytes()).wait(waitScope);
   expectRead(*pipe.ends[1], WEBSOCKET_RESPONSE_HANDSHAKE_ERROR).wait(waitScope);
 
   pipe.ends[1]->shutdownWrite();
@@ -2368,6 +2502,193 @@ KJ_TEST("HttpServer threw exception") {
   auto text = pipe.ends[1]->readAllText().wait(waitScope);
 
   KJ_EXPECT(text.startsWith("HTTP/1.1 500 Internal Server Error"), text);
+}
+
+KJ_TEST("HttpServer bad request") {
+  KJ_HTTP_TEST_SETUP_IO;
+  kj::TimerImpl timer(kj::origin<kj::TimePoint>());
+  auto pipe = KJ_HTTP_TEST_CREATE_2PIPE;
+
+  HttpHeaderTable table;
+  BrokenHttpService service;
+  HttpServer server(timer, table, service);
+
+  auto listenTask = server.listenHttp(kj::mv(pipe.ends[0]));
+
+  static constexpr auto request = "GET / HTTP/1.1\r\nbad request\r\n\r\n"_kj;
+  auto writePromise = pipe.ends[1]->write(request.begin(), request.size());
+  auto response = pipe.ends[1]->readAllText().wait(waitScope);
+  KJ_EXPECT(writePromise.poll(waitScope));
+  writePromise.wait(waitScope);
+
+  static constexpr auto expectedResponse =
+      "HTTP/1.1 400 Bad Request\r\n"
+      "Connection: close\r\n"
+      "Content-Length: 53\r\n"
+      "Content-Type: text/plain\r\n"
+      "\r\n"
+      "ERROR: The headers sent by your client are not valid."_kj;
+
+  KJ_EXPECT(expectedResponse == response, expectedResponse, response);
+}
+
+KJ_TEST("HttpServer invalid method") {
+  KJ_HTTP_TEST_SETUP_IO;
+  kj::TimerImpl timer(kj::origin<kj::TimePoint>());
+  auto pipe = KJ_HTTP_TEST_CREATE_2PIPE;
+
+  HttpHeaderTable table;
+  BrokenHttpService service;
+  HttpServer server(timer, table, service);
+
+  auto listenTask = server.listenHttp(kj::mv(pipe.ends[0]));
+
+  static constexpr auto request = "bad request\r\n\r\n"_kj;
+  auto writePromise = pipe.ends[1]->write(request.begin(), request.size());
+  auto response = pipe.ends[1]->readAllText().wait(waitScope);
+  KJ_EXPECT(writePromise.poll(waitScope));
+  writePromise.wait(waitScope);
+
+  static constexpr auto expectedResponse =
+      "HTTP/1.1 501 Not Implemented\r\n"
+      "Connection: close\r\n"
+      "Content-Length: 35\r\n"
+      "Content-Type: text/plain\r\n"
+      "\r\n"
+      "ERROR: Unrecognized request method."_kj;
+
+  KJ_EXPECT(expectedResponse == response, expectedResponse, response);
+}
+
+// Ensure that HttpServerSettings can continue to be constexpr.
+KJ_UNUSED static constexpr HttpServerSettings STATIC_CONSTEXPR_SETTINGS {};
+
+class TestErrorHandler: public HttpServerErrorHandler {
+public:
+  kj::Promise<void> handleClientProtocolError(
+      HttpHeaders::ProtocolError protocolError, kj::HttpService::Response& response) override {
+    // In a real error handler, you should redact `protocolError.rawContent`.
+    auto message = kj::str("Saw protocol error: ", protocolError.description, "; rawContent = ",
+        encodeCEscape(protocolError.rawContent));
+    return sendError(400, "Bad Request", kj::mv(message), response);
+  }
+
+  kj::Promise<void> handleApplicationError(
+      kj::Exception exception, kj::Maybe<kj::HttpService::Response&> response) override {
+    return sendError(500, "Internal Server Error",
+        kj::str("Saw application error: ", exception.getDescription()), response);
+  }
+
+  kj::Promise<void> handleNoResponse(kj::HttpService::Response& response) override {
+    return sendError(500, "Internal Server Error", kj::str("Saw no response."), response);
+  }
+
+  static TestErrorHandler instance;
+
+private:
+  kj::Promise<void> sendError(uint statusCode, kj::StringPtr statusText, String message,
+      Maybe<HttpService::Response&> response) {
+    KJ_IF_MAYBE(r, response) {
+      HttpHeaderTable headerTable;
+      HttpHeaders headers(headerTable);
+      auto body = r->send(statusCode, statusText, headers, message.size());
+      return body->write(message.begin(), message.size()).attach(kj::mv(body), kj::mv(message));
+    } else {
+      KJ_LOG(ERROR, "Saw an error but too late to report to client.");
+      return kj::READY_NOW;
+    }
+  }
+};
+
+TestErrorHandler TestErrorHandler::instance {};
+
+KJ_TEST("HttpServer no response, custom error handler") {
+  auto PIPELINE_TESTS = pipelineTestCases();
+
+  KJ_HTTP_TEST_SETUP_IO;
+  kj::TimerImpl timer(kj::origin<kj::TimePoint>());
+  auto pipe = KJ_HTTP_TEST_CREATE_2PIPE;
+
+  HttpServerSettings settings {};
+  settings.errorHandler = TestErrorHandler::instance;
+
+  HttpHeaderTable table;
+  BrokenHttpService service;
+  HttpServer server(timer, table, service, settings);
+
+  auto listenTask = server.listenHttp(kj::mv(pipe.ends[0]));
+
+  // Do one request.
+  pipe.ends[1]->write(PIPELINE_TESTS[0].request.raw.begin(), PIPELINE_TESTS[0].request.raw.size())
+      .wait(waitScope);
+  auto text = pipe.ends[1]->readAllText().wait(waitScope);
+
+  KJ_EXPECT(text ==
+      "HTTP/1.1 500 Internal Server Error\r\n"
+      "Connection: close\r\n"
+      "Content-Length: 16\r\n"
+      "\r\n"
+      "Saw no response.", text);
+}
+
+KJ_TEST("HttpServer threw exception, custom error handler") {
+  auto PIPELINE_TESTS = pipelineTestCases();
+
+  KJ_HTTP_TEST_SETUP_IO;
+  kj::TimerImpl timer(kj::origin<kj::TimePoint>());
+  auto pipe = KJ_HTTP_TEST_CREATE_2PIPE;
+
+  HttpServerSettings settings {};
+  settings.errorHandler = TestErrorHandler::instance;
+
+  HttpHeaderTable table;
+  BrokenHttpService service(KJ_EXCEPTION(FAILED, "failed"));
+  HttpServer server(timer, table, service, settings);
+
+  auto listenTask = server.listenHttp(kj::mv(pipe.ends[0]));
+
+  // Do one request.
+  pipe.ends[1]->write(PIPELINE_TESTS[0].request.raw.begin(), PIPELINE_TESTS[0].request.raw.size())
+      .wait(waitScope);
+  auto text = pipe.ends[1]->readAllText().wait(waitScope);
+
+  KJ_EXPECT(text ==
+      "HTTP/1.1 500 Internal Server Error\r\n"
+      "Connection: close\r\n"
+      "Content-Length: 29\r\n"
+      "\r\n"
+      "Saw application error: failed", text);
+}
+
+KJ_TEST("HttpServer bad request, custom error handler") {
+  KJ_HTTP_TEST_SETUP_IO;
+  kj::TimerImpl timer(kj::origin<kj::TimePoint>());
+  auto pipe = KJ_HTTP_TEST_CREATE_2PIPE;
+
+  HttpServerSettings settings {};
+  settings.errorHandler = TestErrorHandler::instance;
+
+  HttpHeaderTable table;
+  BrokenHttpService service;
+  HttpServer server(timer, table, service, settings);
+
+  auto listenTask = server.listenHttp(kj::mv(pipe.ends[0]));
+
+  static constexpr auto request = "bad request\r\n\r\n"_kj;
+  auto writePromise = pipe.ends[1]->write(request.begin(), request.size());
+  auto response = pipe.ends[1]->readAllText().wait(waitScope);
+  KJ_EXPECT(writePromise.poll(waitScope));
+  writePromise.wait(waitScope);
+
+  static constexpr auto expectedResponse =
+      "HTTP/1.1 400 Bad Request\r\n"
+      "Connection: close\r\n"
+      "Content-Length: 87\r\n"
+      "\r\n"
+      "Saw protocol error: ERROR: Unrecognized request method.; "
+      "rawContent = bad request\\000\\n"_kj;
+
+  KJ_EXPECT(expectedResponse == response, expectedResponse, response);
 }
 
 class PartialResponseService final: public HttpService {
@@ -2644,12 +2965,12 @@ KJ_TEST("newHttpService from HttpClient WebSockets") {
 
   auto request = kj::str("GET /websocket", WEBSOCKET_REQUEST_HANDSHAKE);
   auto writeResponsesPromise = expectRead(*backPipe.ends[1], request)
-      .then([&]() { return backPipe.ends[1]->write({asBytes(WEBSOCKET_RESPONSE_HANDSHAKE)}); })
-      .then([&]() { return backPipe.ends[1]->write({WEBSOCKET_FIRST_MESSAGE_INLINE}); })
+      .then([&]() { return writeA(*backPipe.ends[1], asBytes(WEBSOCKET_RESPONSE_HANDSHAKE)); })
+      .then([&]() { return writeA(*backPipe.ends[1], WEBSOCKET_FIRST_MESSAGE_INLINE); })
       .then([&]() { return expectRead(*backPipe.ends[1], WEBSOCKET_SEND_MESSAGE); })
-      .then([&]() { return backPipe.ends[1]->write({WEBSOCKET_REPLY_MESSAGE}); })
+      .then([&]() { return writeA(*backPipe.ends[1], WEBSOCKET_REPLY_MESSAGE); })
       .then([&]() { return expectRead(*backPipe.ends[1], WEBSOCKET_SEND_CLOSE); })
-      .then([&]() { return backPipe.ends[1]->write({WEBSOCKET_REPLY_CLOSE}); })
+      .then([&]() { return writeA(*backPipe.ends[1], WEBSOCKET_REPLY_CLOSE); })
       .eagerlyEvaluate([](kj::Exception&& e) { KJ_LOG(ERROR, e); });
 
   {
@@ -2662,13 +2983,13 @@ KJ_TEST("newHttpService from HttpClient WebSockets") {
     HttpServer frontServer(timer, table, *frontService);
     auto listenTask = frontServer.listenHttp(kj::mv(frontPipe.ends[1]));
 
-    frontPipe.ends[0]->write({request.asBytes()}).wait(waitScope);
+    writeA(*frontPipe.ends[0], request.asBytes()).wait(waitScope);
     expectRead(*frontPipe.ends[0], WEBSOCKET_RESPONSE_HANDSHAKE).wait(waitScope);
 
     expectRead(*frontPipe.ends[0], WEBSOCKET_FIRST_MESSAGE_INLINE).wait(waitScope);
-    frontPipe.ends[0]->write({WEBSOCKET_SEND_MESSAGE}).wait(waitScope);
+    writeA(*frontPipe.ends[0], WEBSOCKET_SEND_MESSAGE).wait(waitScope);
     expectRead(*frontPipe.ends[0], WEBSOCKET_REPLY_MESSAGE).wait(waitScope);
-    frontPipe.ends[0]->write({WEBSOCKET_SEND_CLOSE}).wait(waitScope);
+    writeA(*frontPipe.ends[0], WEBSOCKET_SEND_CLOSE).wait(waitScope);
     expectRead(*frontPipe.ends[0], WEBSOCKET_REPLY_CLOSE).wait(waitScope);
 
     frontPipe.ends[0]->shutdownWrite();
@@ -2686,8 +3007,8 @@ KJ_TEST("newHttpService from HttpClient WebSockets disconnect") {
 
   auto request = kj::str("GET /websocket", WEBSOCKET_REQUEST_HANDSHAKE);
   auto writeResponsesPromise = expectRead(*backPipe.ends[1], request)
-      .then([&]() { return backPipe.ends[1]->write({asBytes(WEBSOCKET_RESPONSE_HANDSHAKE)}); })
-      .then([&]() { return backPipe.ends[1]->write({WEBSOCKET_FIRST_MESSAGE_INLINE}); })
+      .then([&]() { return writeA(*backPipe.ends[1], asBytes(WEBSOCKET_RESPONSE_HANDSHAKE)); })
+      .then([&]() { return writeA(*backPipe.ends[1], WEBSOCKET_FIRST_MESSAGE_INLINE); })
       .then([&]() { return expectRead(*backPipe.ends[1], WEBSOCKET_SEND_MESSAGE); })
       .then([&]() { backPipe.ends[1]->shutdownWrite(); })
       .eagerlyEvaluate([](kj::Exception&& e) { KJ_LOG(ERROR, e); });
@@ -2702,11 +3023,11 @@ KJ_TEST("newHttpService from HttpClient WebSockets disconnect") {
     HttpServer frontServer(timer, table, *frontService);
     auto listenTask = frontServer.listenHttp(kj::mv(frontPipe.ends[1]));
 
-    frontPipe.ends[0]->write({request.asBytes()}).wait(waitScope);
+    writeA(*frontPipe.ends[0], request.asBytes()).wait(waitScope);
     expectRead(*frontPipe.ends[0], WEBSOCKET_RESPONSE_HANDSHAKE).wait(waitScope);
 
     expectRead(*frontPipe.ends[0], WEBSOCKET_FIRST_MESSAGE_INLINE).wait(waitScope);
-    frontPipe.ends[0]->write({WEBSOCKET_SEND_MESSAGE}).wait(waitScope);
+    writeA(*frontPipe.ends[0], WEBSOCKET_SEND_MESSAGE).wait(waitScope);
 
     KJ_EXPECT(frontPipe.ends[0]->readAllText().wait(waitScope) == "");
 
@@ -2746,6 +3067,226 @@ KJ_TEST("newHttpClient from HttpService WebSockets") {
   auto client = newHttpClient(service);
 
   testWebSocketClient(waitScope, *headerTable, hMyHeader, *client);
+}
+
+KJ_TEST("adapted client/server propagates request exceptions like non-adapted client") {
+  KJ_HTTP_TEST_SETUP_IO;
+
+  HttpHeaderTable table;
+  HttpHeaders headers(table);
+
+  class FailingHttpClient final: public HttpClient {
+  public:
+    Request request(
+        HttpMethod method, kj::StringPtr url, const HttpHeaders& headers,
+        kj::Maybe<uint64_t> expectedBodySize = nullptr) override {
+      KJ_FAIL_ASSERT("request_fail");
+    }
+
+    kj::Promise<WebSocketResponse> openWebSocket(
+        kj::StringPtr url, const HttpHeaders& headers) override {
+      KJ_FAIL_ASSERT("websocket_fail");
+    }
+  };
+
+  auto rawClient = kj::heap<FailingHttpClient>();
+
+  auto innerClient = kj::heap<FailingHttpClient>();
+  auto adaptedService = kj::newHttpService(*innerClient).attach(kj::mv(innerClient));
+  auto adaptedClient = kj::newHttpClient(*adaptedService).attach(kj::mv(adaptedService));
+
+  KJ_EXPECT_THROW_MESSAGE("request_fail", rawClient->request(HttpMethod::POST, "/"_kj, headers));
+  KJ_EXPECT_THROW_MESSAGE("request_fail", adaptedClient->request(HttpMethod::POST, "/"_kj, headers));
+
+  KJ_EXPECT_THROW_MESSAGE("websocket_fail", rawClient->openWebSocket("/"_kj, headers));
+  KJ_EXPECT_THROW_MESSAGE("websocket_fail", adaptedClient->openWebSocket("/"_kj, headers));
+}
+
+class DelayedCompletionHttpService final: public HttpService {
+public:
+  DelayedCompletionHttpService(HttpHeaderTable& table, kj::Maybe<uint64_t> expectedLength)
+      : table(table), expectedLength(expectedLength) {}
+
+  kj::Promise<void> request(
+      HttpMethod method, kj::StringPtr url, const HttpHeaders& headers,
+      kj::AsyncInputStream& requestBody, Response& response) override {
+    auto stream = response.send(200, "OK", HttpHeaders(table), expectedLength);
+    auto promise = stream->write("foo", 3);
+    return promise.attach(kj::mv(stream)).then([this]() {
+      return kj::mv(paf.promise);
+    });
+  }
+
+  kj::PromiseFulfiller<void>& getFulfiller() { return *paf.fulfiller; }
+
+private:
+  HttpHeaderTable& table;
+  kj::Maybe<uint64_t> expectedLength;
+  kj::PromiseFulfillerPair<void> paf = kj::newPromiseAndFulfiller<void>();
+};
+
+void doDelayedCompletionTest(bool exception, kj::Maybe<uint64_t> expectedLength) noexcept {
+  KJ_HTTP_TEST_SETUP_IO;
+
+  HttpHeaderTable table;
+
+  DelayedCompletionHttpService service(table, expectedLength);
+  auto client = newHttpClient(service);
+
+  auto resp = client->request(HttpMethod::GET, "/", HttpHeaders(table), uint64_t(0))
+      .response.wait(waitScope);
+  KJ_EXPECT(resp.statusCode == 200);
+
+  // Read "foo" from the response body: works
+  char buffer[16];
+  KJ_ASSERT(resp.body->tryRead(buffer, 1, sizeof(buffer)).wait(waitScope) == 3);
+  buffer[3] = '\0';
+  KJ_EXPECT(buffer == "foo"_kj);
+
+  // But reading any more hangs.
+  auto promise = resp.body->tryRead(buffer, 1, sizeof(buffer));
+
+  KJ_EXPECT(!promise.poll(waitScope));
+
+  // Until we cause the service to return.
+  if (exception) {
+    service.getFulfiller().reject(KJ_EXCEPTION(FAILED, "service-side failure"));
+  } else {
+    service.getFulfiller().fulfill();
+  }
+
+  KJ_ASSERT(promise.poll(waitScope));
+
+  if (exception) {
+    KJ_EXPECT_THROW_MESSAGE("service-side failure", promise.wait(waitScope));
+  } else {
+    promise.wait(waitScope);
+  }
+};
+
+KJ_TEST("adapted client waits for service to complete before returning EOF on response stream") {
+  doDelayedCompletionTest(false, uint64_t(3));
+}
+
+KJ_TEST("adapted client waits for service to complete before returning EOF on chunked response") {
+  doDelayedCompletionTest(false, nullptr);
+}
+
+KJ_TEST("adapted client propagates throw from service after complete response body sent") {
+  doDelayedCompletionTest(true, uint64_t(3));
+}
+
+KJ_TEST("adapted client propagates throw from service after incomplete response body sent") {
+  doDelayedCompletionTest(true, uint64_t(6));
+}
+
+KJ_TEST("adapted client propagates throw from service after chunked response body sent") {
+  doDelayedCompletionTest(true, nullptr);
+}
+
+class DelayedCompletionWebSocketHttpService final: public HttpService {
+public:
+  DelayedCompletionWebSocketHttpService(HttpHeaderTable& table, bool closeUpstreamFirst)
+      : table(table), closeUpstreamFirst(closeUpstreamFirst) {}
+
+  kj::Promise<void> request(
+      HttpMethod method, kj::StringPtr url, const HttpHeaders& headers,
+      kj::AsyncInputStream& requestBody, Response& response) override {
+    KJ_ASSERT(headers.isWebSocket());
+
+    auto ws = response.acceptWebSocket(HttpHeaders(table));
+    kj::Promise<void> promise = kj::READY_NOW;
+    if (closeUpstreamFirst) {
+      // Wait for a close message from the client before starting.
+      promise = promise.then([&ws = *ws]() { return ws.receive(); }).ignoreResult();
+    }
+    promise = promise
+        .then([&ws = *ws]() { return ws.send("foo"_kj); })
+        .then([&ws = *ws]() { return ws.close(1234, "closed"_kj); });
+    if (!closeUpstreamFirst) {
+      // Wait for a close message from the client at the end.
+      promise = promise.then([&ws = *ws]() { return ws.receive(); }).ignoreResult();
+    }
+    return promise.attach(kj::mv(ws)).then([this]() {
+      return kj::mv(paf.promise);
+    });
+  }
+
+  kj::PromiseFulfiller<void>& getFulfiller() { return *paf.fulfiller; }
+
+private:
+  HttpHeaderTable& table;
+  bool closeUpstreamFirst;
+  kj::PromiseFulfillerPair<void> paf = kj::newPromiseAndFulfiller<void>();
+};
+
+void doDelayedCompletionWebSocketTest(bool exception, bool closeUpstreamFirst) noexcept {
+  KJ_HTTP_TEST_SETUP_IO;
+
+  HttpHeaderTable table;
+
+  DelayedCompletionWebSocketHttpService service(table, closeUpstreamFirst);
+  auto client = newHttpClient(service);
+
+  auto resp = client->openWebSocket("/", HttpHeaders(table)).wait(waitScope);
+  auto ws = kj::mv(KJ_ASSERT_NONNULL(resp.webSocketOrBody.tryGet<kj::Own<WebSocket>>()));
+
+  if (closeUpstreamFirst) {
+    // Send "close" immediately.
+    ws->close(1234, "whatever"_kj).wait(waitScope);
+  }
+
+  // Read "foo" from the WebSocket: works
+  {
+    auto msg = ws->receive().wait(waitScope);
+    KJ_ASSERT(msg.is<kj::String>());
+    KJ_ASSERT(msg.get<kj::String>() == "foo");
+  }
+
+  kj::Promise<void> promise = nullptr;
+  if (closeUpstreamFirst) {
+    // Receiving the close hangs.
+    promise = ws->receive()
+        .then([](WebSocket::Message&& msg) { KJ_EXPECT(msg.is<WebSocket::Close>()); });
+  } else {
+    auto msg = ws->receive().wait(waitScope);
+    KJ_ASSERT(msg.is<WebSocket::Close>());
+
+    // Sending a close hangs.
+    promise = ws->close(1234, "whatever"_kj);
+  }
+  KJ_EXPECT(!promise.poll(waitScope));
+
+  // Until we cause the service to return.
+  if (exception) {
+    service.getFulfiller().reject(KJ_EXCEPTION(FAILED, "service-side failure"));
+  } else {
+    service.getFulfiller().fulfill();
+  }
+
+  KJ_ASSERT(promise.poll(waitScope));
+
+  if (exception) {
+    KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("service-side failure", promise.wait(waitScope));
+  } else {
+    promise.wait(waitScope);
+  }
+};
+
+KJ_TEST("adapted client waits for service to complete before completing upstream close on WebSocket") {
+  doDelayedCompletionWebSocketTest(false, false);
+}
+
+KJ_TEST("adapted client waits for service to complete before returning downstream close on WebSocket") {
+  doDelayedCompletionWebSocketTest(false, true);
+}
+
+KJ_TEST("adapted client propagates throw from service after WebSocket upstream close sent") {
+  doDelayedCompletionWebSocketTest(true, false);
+}
+
+KJ_TEST("adapted client propagates throw from service after WebSocket downstream close sent") {
+  doDelayedCompletionWebSocketTest(true, true);
 }
 
 // -----------------------------------------------------------------------------
@@ -2894,21 +3435,18 @@ private:
 };
 
 KJ_TEST("HttpClient connection management") {
-  auto io = kj::setupAsyncIo();
+  KJ_HTTP_TEST_SETUP_IO;
+  KJ_HTTP_TEST_SETUP_LOOPBACK_LISTENER_AND_ADDR;
 
   kj::TimerImpl serverTimer(kj::origin<kj::TimePoint>());
   kj::TimerImpl clientTimer(kj::origin<kj::TimePoint>());
   HttpHeaderTable headerTable;
 
-  auto listener = io.provider->getNetwork().parseAddress("localhost", 0)
-      .wait(io.waitScope)->listen();
   DummyService service(headerTable);
   HttpServerSettings serverSettings;
   HttpServer server(serverTimer, headerTable, service, serverSettings);
   auto listenTask = server.listenHttp(*listener);
 
-  auto addr = io.provider->getNetwork().parseAddress("localhost", listener->getPort())
-      .wait(io.waitScope);
   uint count = 0;
   uint cumulative = 0;
   CountingNetworkAddress countingAddr(*addr, count, cumulative);
@@ -2934,17 +3472,17 @@ KJ_TEST("HttpClient connection management") {
   };
 
   // We can do several requests in a row and only have one connection.
-  doRequest().wait(io.waitScope);
-  doRequest().wait(io.waitScope);
-  doRequest().wait(io.waitScope);
+  doRequest().wait(waitScope);
+  doRequest().wait(waitScope);
+  doRequest().wait(waitScope);
   KJ_EXPECT(count == 1);
   KJ_EXPECT(cumulative == 1);
 
   // But if we do two in parallel, we'll end up with two connections.
   auto req1 = doRequest();
   auto req2 = doRequest();
-  req1.wait(io.waitScope);
-  req2.wait(io.waitScope);
+  req1.wait(waitScope);
+  req2.wait(waitScope);
   KJ_EXPECT(count == 2);
   KJ_EXPECT(cumulative == 2);
 
@@ -2952,66 +3490,66 @@ KJ_TEST("HttpClient connection management") {
   {
     auto req = client->request(
         HttpMethod::POST, kj::str("/foo"), HttpHeaders(headerTable), size_t(6));
-    req.body->write("foobar", 6).wait(io.waitScope);
-    req.response.wait(io.waitScope).body->readAllBytes().wait(io.waitScope);
+    req.body->write("foobar", 6).wait(waitScope);
+    req.response.wait(waitScope).body->readAllBytes().wait(waitScope);
   }
   KJ_EXPECT(count == 2);
   KJ_EXPECT(cumulative == 2);
-  doRequest().wait(io.waitScope);
+  doRequest().wait(waitScope);
   KJ_EXPECT(count == 2);
   KJ_EXPECT(cumulative == 2);
 
   // Advance time for half the timeout, then exercise one of the connections.
-  clientTimer.advanceTo(clientTimer.now() + clientSettings.idleTimout / 2);
-  doRequest().wait(io.waitScope);
-  doRequest().wait(io.waitScope);
-  io.waitScope.poll();
+  clientTimer.advanceTo(clientTimer.now() + clientSettings.idleTimeout / 2);
+  doRequest().wait(waitScope);
+  doRequest().wait(waitScope);
+  waitScope.poll();
   KJ_EXPECT(count == 2);
   KJ_EXPECT(cumulative == 2);
 
   // Advance time past when the other connection should time out. It should be dropped.
-  clientTimer.advanceTo(clientTimer.now() + clientSettings.idleTimout * 3 / 4);
-  io.waitScope.poll();
+  clientTimer.advanceTo(clientTimer.now() + clientSettings.idleTimeout * 3 / 4);
+  waitScope.poll();
   KJ_EXPECT(count == 1);
   KJ_EXPECT(cumulative == 2);
 
   // Wait for the other to drop.
-  clientTimer.advanceTo(clientTimer.now() + clientSettings.idleTimout / 2);
-  io.waitScope.poll();
+  clientTimer.advanceTo(clientTimer.now() + clientSettings.idleTimeout / 2);
+  waitScope.poll();
   KJ_EXPECT(count == 0);
   KJ_EXPECT(cumulative == 2);
 
   // New request creates a new connection again.
-  doRequest().wait(io.waitScope);
+  doRequest().wait(waitScope);
   KJ_EXPECT(count == 1);
   KJ_EXPECT(cumulative == 3);
 
   // WebSocket connections are not reused.
   client->openWebSocket(kj::str("/websocket"), HttpHeaders(headerTable))
-      .wait(io.waitScope);
+      .wait(waitScope);
   KJ_EXPECT(count == 0);
   KJ_EXPECT(cumulative == 3);
 
   // Errored connections are not reused.
-  doRequest().wait(io.waitScope);
+  doRequest().wait(waitScope);
   KJ_EXPECT(count == 1);
   KJ_EXPECT(cumulative == 4);
   client->request(HttpMethod::GET, kj::str("/throw"), HttpHeaders(headerTable)).response
-      .wait(io.waitScope).body->readAllBytes().wait(io.waitScope);
+      .wait(waitScope).body->readAllBytes().wait(waitScope);
   KJ_EXPECT(count == 0);
   KJ_EXPECT(cumulative == 4);
 
   // Connections where we failed to read the full response body are not reused.
-  doRequest().wait(io.waitScope);
+  doRequest().wait(waitScope);
   KJ_EXPECT(count == 1);
   KJ_EXPECT(cumulative == 5);
   client->request(HttpMethod::GET, kj::str("/foo"), HttpHeaders(headerTable)).response
-      .wait(io.waitScope);
+      .wait(waitScope);
   KJ_EXPECT(count == 0);
   KJ_EXPECT(cumulative == 5);
 
   // Connections where we didn't even wait for the response headers are not reused.
-  doRequest().wait(io.waitScope);
+  doRequest().wait(waitScope);
   KJ_EXPECT(count == 1);
   KJ_EXPECT(cumulative == 6);
   client->request(HttpMethod::GET, kj::str("/foo"), HttpHeaders(headerTable));
@@ -3019,51 +3557,48 @@ KJ_TEST("HttpClient connection management") {
   KJ_EXPECT(cumulative == 6);
 
   // Connections where we failed to write the full request body are not reused.
-  doRequest().wait(io.waitScope);
+  doRequest().wait(waitScope);
   KJ_EXPECT(count == 1);
   KJ_EXPECT(cumulative == 7);
   client->request(HttpMethod::POST, kj::str("/foo"), HttpHeaders(headerTable), size_t(6)).response
-      .wait(io.waitScope).body->readAllBytes().wait(io.waitScope);
+      .wait(waitScope).body->readAllBytes().wait(waitScope);
   KJ_EXPECT(count == 0);
   KJ_EXPECT(cumulative == 7);
 
   // If the server times out the connection, we figure it out on the client.
-  doRequest().wait(io.waitScope);
+  doRequest().wait(waitScope);
 
   // TODO(someday): Figure out why the following poll is necessary for the test to pass on Windows
   //   and Mac.  Without it, it seems that the request's connection never starts, so the
   //   subsequent advanceTo() does not actually time out the connection.
-  io.waitScope.poll();
+  waitScope.poll();
 
   KJ_EXPECT(count == 1);
   KJ_EXPECT(cumulative == 8);
   serverTimer.advanceTo(serverTimer.now() + serverSettings.pipelineTimeout * 2);
-  io.waitScope.poll();
+  waitScope.poll();
   KJ_EXPECT(count == 0);
   KJ_EXPECT(cumulative == 8);
 
   // Can still make requests.
-  doRequest().wait(io.waitScope);
+  doRequest().wait(waitScope);
   KJ_EXPECT(count == 1);
   KJ_EXPECT(cumulative == 9);
 }
 
 KJ_TEST("HttpClient disable connection reuse") {
-  auto io = kj::setupAsyncIo();
+  KJ_HTTP_TEST_SETUP_IO;
+  KJ_HTTP_TEST_SETUP_LOOPBACK_LISTENER_AND_ADDR;
 
   kj::TimerImpl serverTimer(kj::origin<kj::TimePoint>());
   kj::TimerImpl clientTimer(kj::origin<kj::TimePoint>());
   HttpHeaderTable headerTable;
 
-  auto listener = io.provider->getNetwork().parseAddress("localhost", 0)
-      .wait(io.waitScope)->listen();
   DummyService service(headerTable);
   HttpServerSettings serverSettings;
   HttpServer server(serverTimer, headerTable, service, serverSettings);
   auto listenTask = server.listenHttp(*listener);
 
-  auto addr = io.provider->getNetwork().parseAddress("localhost", listener->getPort())
-      .wait(io.waitScope);
   uint count = 0;
   uint cumulative = 0;
   CountingNetworkAddress countingAddr(*addr, count, cumulative);
@@ -3071,7 +3606,7 @@ KJ_TEST("HttpClient disable connection reuse") {
   FakeEntropySource entropySource;
   HttpClientSettings clientSettings;
   clientSettings.entropySource = entropySource;
-  clientSettings.idleTimout = 0 * kj::SECONDS;
+  clientSettings.idleTimeout = 0 * kj::SECONDS;
   auto client = newHttpClient(clientTimer, headerTable, countingAddr, clientSettings);
 
   KJ_EXPECT(count == 0);
@@ -3090,37 +3625,42 @@ KJ_TEST("HttpClient disable connection reuse") {
   };
 
   // Each serial request gets its own connection.
-  doRequest().wait(io.waitScope);
-  doRequest().wait(io.waitScope);
-  doRequest().wait(io.waitScope);
+  doRequest().wait(waitScope);
+  doRequest().wait(waitScope);
+  doRequest().wait(waitScope);
   KJ_EXPECT(count == 0);
   KJ_EXPECT(cumulative == 3);
 
   // Each parallel request gets its own connection.
   auto req1 = doRequest();
   auto req2 = doRequest();
-  req1.wait(io.waitScope);
-  req2.wait(io.waitScope);
+  req1.wait(waitScope);
+  req2.wait(waitScope);
   KJ_EXPECT(count == 0);
   KJ_EXPECT(cumulative == 5);
 }
 
 KJ_TEST("HttpClient concurrency limiting") {
-  auto io = kj::setupAsyncIo();
+#if KJ_HTTP_TEST_USE_OS_PIPE && !__linux__
+  // On Windows and Mac, OS event delivery is not always immediate, and that seems to make this
+  // test flakey. On Linux, events are always immediately delivered. For now, we compile the test
+  // but we don't run it outside of Linux. We do run the in-memory-pipes version on all OSs since
+  // that mode shouldn't depend on kernel behavior at all.
+  return;
+#endif
+
+  KJ_HTTP_TEST_SETUP_IO;
+  KJ_HTTP_TEST_SETUP_LOOPBACK_LISTENER_AND_ADDR;
 
   kj::TimerImpl serverTimer(kj::origin<kj::TimePoint>());
   kj::TimerImpl clientTimer(kj::origin<kj::TimePoint>());
   HttpHeaderTable headerTable;
 
-  auto listener = io.provider->getNetwork().parseAddress("localhost", 0)
-      .wait(io.waitScope)->listen();
   DummyService service(headerTable);
   HttpServerSettings serverSettings;
   HttpServer server(serverTimer, headerTable, service, serverSettings);
   auto listenTask = server.listenHttp(*listener);
 
-  auto addr = io.provider->getNetwork().parseAddress("localhost", listener->getPort())
-      .wait(io.waitScope);
   uint count = 0;
   uint cumulative = 0;
   CountingNetworkAddress countingAddr(*addr, count, cumulative);
@@ -3128,7 +3668,7 @@ KJ_TEST("HttpClient concurrency limiting") {
   FakeEntropySource entropySource;
   HttpClientSettings clientSettings;
   clientSettings.entropySource = entropySource;
-  clientSettings.idleTimout = 0 * kj::SECONDS;
+  clientSettings.idleTimeout = 0 * kj::SECONDS;
   auto innerClient = newHttpClient(clientTimer, headerTable, countingAddr, clientSettings);
 
   struct CallbackEvent {
@@ -3173,24 +3713,24 @@ KJ_TEST("HttpClient concurrency limiting") {
   auto req2 = doRequest();
 
   // TODO(someday): Figure out why this poll() is necessary on Windows and macOS.
-  io.waitScope.poll();
+  waitScope.poll();
 
-  KJ_EXPECT(req1.poll(io.waitScope));
-  KJ_EXPECT(!req2.poll(io.waitScope));
+  KJ_EXPECT(req1.poll(waitScope));
+  KJ_EXPECT(!req2.poll(waitScope));
   KJ_EXPECT(count == 1);
   KJ_EXPECT(cumulative == 1);
   KJ_EXPECT(callbackEvents == kj::ArrayPtr<const CallbackEvent>({ {1, 1} }));
   callbackEvents.clear();
 
   // Releasing first connection allows second to start.
-  req1.wait(io.waitScope);
-  KJ_EXPECT(req2.poll(io.waitScope));
+  req1.wait(waitScope);
+  KJ_EXPECT(req2.poll(waitScope));
   KJ_EXPECT(count == 1);
   KJ_EXPECT(cumulative == 2);
   KJ_EXPECT(callbackEvents == kj::ArrayPtr<const CallbackEvent>({ {1, 0} }));
   callbackEvents.clear();
 
-  req2.wait(io.waitScope);
+  req2.wait(waitScope);
   KJ_EXPECT(count == 0);
   KJ_EXPECT(cumulative == 2);
   KJ_EXPECT(callbackEvents == kj::ArrayPtr<const CallbackEvent>({ {0, 0} }));
@@ -3202,18 +3742,17 @@ KJ_TEST("HttpClient concurrency limiting") {
     kj::Own<kj::AsyncOutputStream> req4Body;
     {
       auto req4 = client->request(HttpMethod::GET, kj::str("/", ++i), HttpHeaders(headerTable));
-      io.waitScope.poll();
+      waitScope.poll();
       req4Body = kj::mv(req4.body);
     }
     auto writePromise = req4Body->write("a", 1);
-    KJ_EXPECT(!writePromise.poll(io.waitScope));
+    KJ_EXPECT(!writePromise.poll(waitScope));
   }
-  req3.wait(io.waitScope);
+  req3.wait(waitScope);
   KJ_EXPECT(count == 0);
   KJ_EXPECT(cumulative == 3);
 
   // Similar connection limiting for web sockets
-#if __linux__
   // TODO(someday): Figure out why the sequencing of websockets events does
   // not work correctly on Windows (and maybe macOS?).  The solution is not as
   // simple as inserting poll()s as above, since doing so puts the websocket in
@@ -3224,33 +3763,34 @@ KJ_TEST("HttpClient concurrency limiting") {
   KJ_EXPECT(callbackEvents == kj::ArrayPtr<const CallbackEvent>({ {1, 0} }));
   callbackEvents.clear();
   auto ws2 = kj::heap(client->openWebSocket(kj::str("/websocket"), HttpHeaders(headerTable)));
-  KJ_EXPECT(ws1->poll(io.waitScope));
-  KJ_EXPECT(!ws2->poll(io.waitScope));
+  KJ_EXPECT(ws1->poll(waitScope));
+  KJ_EXPECT(!ws2->poll(waitScope));
   KJ_EXPECT(count == 1);
   KJ_EXPECT(cumulative == 4);
   KJ_EXPECT(callbackEvents == kj::ArrayPtr<const CallbackEvent>({ {1, 1} }));
   callbackEvents.clear();
 
   {
-    auto response1 = ws1->wait(io.waitScope);
-    KJ_EXPECT(!ws2->poll(io.waitScope));
+    auto response1 = ws1->wait(waitScope);
+    KJ_EXPECT(!ws2->poll(waitScope));
     KJ_EXPECT(callbackEvents == kj::ArrayPtr<const CallbackEvent>({}));
   }
-  KJ_EXPECT(ws2->poll(io.waitScope));
+  KJ_EXPECT(ws2->poll(waitScope));
   KJ_EXPECT(count == 1);
   KJ_EXPECT(cumulative == 5);
   KJ_EXPECT(callbackEvents == kj::ArrayPtr<const CallbackEvent>({ {1, 0} }));
   callbackEvents.clear();
   {
-    auto response2 = ws2->wait(io.waitScope);
+    auto response2 = ws2->wait(waitScope);
     KJ_EXPECT(callbackEvents == kj::ArrayPtr<const CallbackEvent>({}));
   }
   KJ_EXPECT(count == 0);
   KJ_EXPECT(cumulative == 5);
   KJ_EXPECT(callbackEvents == kj::ArrayPtr<const CallbackEvent>({ {0, 0} }));
-#endif
 }
 
+#if KJ_HTTP_TEST_USE_OS_PIPE
+// TODO(someday): Implement mock kj::Network for userspace version of this test?
 KJ_TEST("HttpClient multi host") {
   auto io = kj::setupAsyncIo();
 
@@ -3338,7 +3878,7 @@ KJ_TEST("HttpClient multi host") {
   KJ_EXPECT(tlsAddrCount == 1);
 
   // Let everything expire.
-  clientTimer.advanceTo(clientTimer.now() + clientSettings.idleTimout * 2);
+  clientTimer.advanceTo(clientTimer.now() + clientSettings.idleTimeout * 2);
   io.waitScope.poll();
   KJ_EXPECT(count == 0);
   KJ_EXPECT(tlsCount == 0);
@@ -3352,9 +3892,12 @@ KJ_TEST("HttpClient multi host") {
   KJ_EXPECT(addrCount == 1);
   KJ_EXPECT(tlsAddrCount == 0);
 }
+#endif
 
 // -----------------------------------------------------------------------------
 
+#if KJ_HTTP_TEST_USE_OS_PIPE
+// This test only makes sense using the real network.
 KJ_TEST("HttpClient to capnproto.org") {
   auto io = kj::setupAsyncIo();
 
@@ -3387,6 +3930,7 @@ KJ_TEST("HttpClient to capnproto.org") {
     auto body = response.body->readAllText().wait(io.waitScope);
   }
 }
+#endif
 
 }  // namespace
 }  // namespace kj

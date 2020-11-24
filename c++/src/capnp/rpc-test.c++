@@ -198,7 +198,7 @@ typedef VatNetwork<
 
 class TestNetworkAdapter final: public TestNetworkAdapterBase {
 public:
-  TestNetworkAdapter(TestNetwork& network): network(network) {}
+  TestNetworkAdapter(TestNetwork& network, kj::StringPtr self): network(network), self(self) {}
 
   ~TestNetworkAdapter() {
     kj::Exception exception = KJ_EXCEPTION(FAILED, "Network was destroyed.");
@@ -246,6 +246,10 @@ public:
         return message.getRoot<AnyPointer>();
       }
 
+      size_t sizeInWords() override {
+        return data.size();
+      }
+
       kj::Array<word> data;
       FlatArrayMessageReader message;
     };
@@ -289,6 +293,10 @@ public:
             }
           }
         })));
+      }
+
+      size_t sizeInWords() override {
+        return message.sizeInWords();
       }
 
     private:
@@ -354,6 +362,10 @@ public:
   };
 
   kj::Maybe<kj::Own<Connection>> connect(test::TestSturdyRefHostId::Reader hostId) override {
+    if (hostId.getHost() == self) {
+      return nullptr;
+    }
+
     TestNetworkAdapter& dst = KJ_REQUIRE_NONNULL(network.find(hostId.getHost()));
 
     auto iter = connections.find(&dst);
@@ -392,6 +404,7 @@ public:
 
 private:
   TestNetwork& network;
+  kj::StringPtr self;
   uint sent = 0;
   uint received = 0;
 
@@ -403,7 +416,7 @@ private:
 TestNetwork::~TestNetwork() noexcept(false) {}
 
 TestNetworkAdapter& TestNetwork::add(kj::StringPtr name) {
-  return *(map[name] = kj::heap<TestNetworkAdapter>(*this));
+  return *(map[name] = kj::heap<TestNetworkAdapter>(*this, name));
 }
 
 // =======================================================================================
@@ -448,6 +461,12 @@ struct TestContext {
         serverNetwork(network.add("server")),
         rpcClient(makeRpcClient(clientNetwork)),
         rpcServer(makeRpcServer(serverNetwork, restorer)) {}
+  TestContext(Capability::Client bootstrap)
+      : waitScope(loop),
+        clientNetwork(network.add("client")),
+        serverNetwork(network.add("server")),
+        rpcClient(makeRpcClient(clientNetwork)),
+        rpcServer(makeRpcServer(serverNetwork, bootstrap)) {}
   TestContext(Capability::Client bootstrap,
               RealmGateway<test::TestSturdyRef, Text>::Client gateway)
       : waitScope(loop),
@@ -633,14 +652,126 @@ TEST(Rpc, TailCall) {
 
   auto dependentCall1 = promise.getC().getCallSequenceRequest().send();
 
-  auto dependentCall2 = response.getC().getCallSequenceRequest().send();
-
   EXPECT_EQ(0, dependentCall0.wait(context.waitScope).getN());
   EXPECT_EQ(1, dependentCall1.wait(context.waitScope).getN());
+
+  // TODO(someday): We used to initiate dependentCall2 here before waiting on the first two calls,
+  //   and the ordering was still "correct". But this was apparently by accident. Calling getC() on
+  //   the final response returns a different capability from calling getC() on the promise. There
+  //   are no guarantees on the ordering of calls on the response capability vs. the earlier
+  //   promise. When ordering matters, applications should take the original promise capability and
+  //   keep using that. In theory the RPC system could create continuity here, but it would be
+  //   annoying: for each capability that had been fetched on the promise, it would need to
+  //   traverse to the same capability in the final response and swap it out in-place for the
+  //   pipelined cap returned earlier. Maybe we'll determine later that that's really needed but
+  //   for now I'm not gonna do it.
+  auto dependentCall2 = response.getC().getCallSequenceRequest().send();
+
   EXPECT_EQ(2, dependentCall2.wait(context.waitScope).getN());
 
   EXPECT_EQ(1, calleeCallCount);
   EXPECT_EQ(1, context.restorer.callCount);
+}
+
+class TestHangingTailCallee final: public test::TestTailCallee::Server {
+public:
+  TestHangingTailCallee(int& callCount, int& cancelCount)
+      : callCount(callCount), cancelCount(cancelCount) {}
+
+  kj::Promise<void> foo(FooContext context) override {
+    context.allowCancellation();
+    ++callCount;
+    return kj::Promise<void>(kj::NEVER_DONE)
+        .attach(kj::defer([&cancelCount = cancelCount]() { ++cancelCount; }));
+  }
+
+private:
+  int& callCount;
+  int& cancelCount;
+};
+
+class TestRacingTailCaller final: public test::TestTailCaller::Server {
+public:
+  TestRacingTailCaller(kj::Promise<void> unblock): unblock(kj::mv(unblock)) {}
+
+  kj::Promise<void> foo(FooContext context) override {
+    return unblock.then([context]() mutable {
+      auto tailRequest = context.getParams().getCallee().fooRequest();
+      return context.tailCall(kj::mv(tailRequest));
+    });
+  }
+
+private:
+  kj::Promise<void> unblock;
+};
+
+TEST(Rpc, TailCallCancel) {
+  TestContext context;
+
+  auto caller = context.connect(test::TestSturdyRefObjectId::Tag::TEST_TAIL_CALLER)
+      .castAs<test::TestTailCaller>();
+
+  int callCount = 0, cancelCount = 0;
+
+  test::TestTailCallee::Client callee(kj::heap<TestHangingTailCallee>(callCount, cancelCount));
+
+  {
+    auto request = caller.fooRequest();
+    request.setCallee(callee);
+
+    auto promise = request.send();
+
+    KJ_ASSERT(callCount == 0);
+    KJ_ASSERT(cancelCount == 0);
+
+    KJ_ASSERT(!promise.poll(context.waitScope));
+
+    KJ_ASSERT(callCount == 1);
+    KJ_ASSERT(cancelCount == 0);
+  }
+
+  kj::Promise<void>(kj::NEVER_DONE).poll(context.waitScope);
+
+  KJ_ASSERT(callCount == 1);
+  KJ_ASSERT(cancelCount == 1);
+}
+
+TEST(Rpc, TailCallCancelRace) {
+  auto paf = kj::newPromiseAndFulfiller<void>();
+  TestContext context(kj::heap<TestRacingTailCaller>(kj::mv(paf.promise)));
+
+  MallocMessageBuilder serverHostIdBuilder;
+  auto serverHostId = serverHostIdBuilder.getRoot<test::TestSturdyRefHostId>();
+  serverHostId.setHost("server");
+
+  auto caller = context.rpcClient.bootstrap(serverHostId).castAs<test::TestTailCaller>();
+
+  int callCount = 0, cancelCount = 0;
+
+  test::TestTailCallee::Client callee(kj::heap<TestHangingTailCallee>(callCount, cancelCount));
+
+  {
+    auto request = caller.fooRequest();
+    request.setCallee(callee);
+
+    auto promise = request.send();
+
+    KJ_ASSERT(callCount == 0);
+    KJ_ASSERT(cancelCount == 0);
+
+    KJ_ASSERT(!promise.poll(context.waitScope));
+
+    KJ_ASSERT(callCount == 0);
+    KJ_ASSERT(cancelCount == 0);
+
+    // Unblock the server and at the same time cancel the client.
+    paf.fulfiller->fulfill();
+  }
+
+  kj::Promise<void>(kj::NEVER_DONE).poll(context.waitScope);
+
+  KJ_ASSERT(callCount == 1);
+  KJ_ASSERT(cancelCount == 1);
 }
 
 TEST(Rpc, Cancelation) {
@@ -899,6 +1030,55 @@ TEST(Rpc, Embargo) {
   EXPECT_EQ(3, call3.wait(context.waitScope).getN());
   EXPECT_EQ(4, call4.wait(context.waitScope).getN());
   EXPECT_EQ(5, call5.wait(context.waitScope).getN());
+}
+
+TEST(Rpc, EmbargoUnwrap) {
+  // Test that embargos properly block unwraping a capability using CapabilityServerSet.
+
+  TestContext context;
+
+  capnp::CapabilityServerSet<test::TestCallOrder> capSet;
+
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_MORE_STUFF)
+      .castAs<test::TestMoreStuff>();
+
+  auto cap = capSet.add(kj::heap<TestCallOrderImpl>());
+
+  auto earlyCall = client.getCallSequenceRequest().send();
+
+  auto echoRequest = client.echoRequest();
+  echoRequest.setCap(cap);
+  auto echo = echoRequest.send();
+
+  auto pipeline = echo.getCap();
+
+  auto unwrap = capSet.getLocalServer(pipeline)
+      .then([](kj::Maybe<test::TestCallOrder::Server&> unwrapped) {
+    return kj::downcast<TestCallOrderImpl>(KJ_ASSERT_NONNULL(unwrapped)).getCount();
+  }).eagerlyEvaluate(nullptr);
+
+  auto call0 = getCallSequence(pipeline, 0);
+  auto call1 = getCallSequence(pipeline, 1);
+
+  earlyCall.wait(context.waitScope);
+
+  auto call2 = getCallSequence(pipeline, 2);
+
+  auto resolved = echo.wait(context.waitScope).getCap();
+
+  auto call3 = getCallSequence(pipeline, 4);
+  auto call4 = getCallSequence(pipeline, 4);
+  auto call5 = getCallSequence(pipeline, 5);
+
+  EXPECT_EQ(0, call0.wait(context.waitScope).getN());
+  EXPECT_EQ(1, call1.wait(context.waitScope).getN());
+  EXPECT_EQ(2, call2.wait(context.waitScope).getN());
+  EXPECT_EQ(3, call3.wait(context.waitScope).getN());
+  EXPECT_EQ(4, call4.wait(context.waitScope).getN());
+  EXPECT_EQ(5, call5.wait(context.waitScope).getN());
+
+  uint unwrappedAt = unwrap.wait(context.waitScope);
+  KJ_EXPECT(unwrappedAt >= 3, unwrappedAt);
 }
 
 template <typename T>
@@ -1254,6 +1434,26 @@ TEST(Rpc, RealmGatewayImportExport) {
   // Should have the original value. If it went through import and re-export, though, then this
   // will be "exported-imported-foo", which is wrong.
   EXPECT_EQ("foo", response.getSturdyRef());
+}
+
+KJ_TEST("loopback bootstrap()") {
+  int callCount = 0;
+  test::TestInterface::Client bootstrap = kj::heap<TestInterfaceImpl>(callCount);
+
+  MallocMessageBuilder hostIdBuilder;
+  auto hostId = hostIdBuilder.getRoot<test::TestSturdyRefHostId>();
+  hostId.setHost("server");
+
+  TestContext context(bootstrap);
+  auto client = context.rpcServer.bootstrap(hostId).castAs<test::TestInterface>();
+
+  auto request = client.fooRequest();
+  request.setI(123);
+  request.setJ(true);
+  auto response = request.send().wait(context.waitScope);
+
+  KJ_EXPECT(response.getX() == "foo");
+  KJ_EXPECT(callCount == 1);
 }
 
 }  // namespace

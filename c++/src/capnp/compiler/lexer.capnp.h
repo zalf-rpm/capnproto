@@ -21,10 +21,12 @@
 #include <capnp/generated-header-support.h>
 #include <kj/windows-sanity.h>
 
-#if CAPNP_VERSION != 8000
+#if CAPNP_VERSION != 9000
 #error "Version mismatch between generated code and library headers.  You must use the same version of the Cap'n Proto compiler and library."
 #endif
 
+
+CAPNP_BEGIN_HEADER
 
 namespace capnp {
 namespace schemas {
@@ -1253,4 +1255,6 @@ inline ::capnp::Orphan< ::capnp::List< ::capnp::compiler::Statement,  ::capnp::K
 
 }  // namespace
 }  // namespace
+
+CAPNP_END_HEADER
 

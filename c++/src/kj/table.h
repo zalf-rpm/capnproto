@@ -21,10 +21,6 @@
 
 #pragma once
 
-#if defined(__GNUC__) && !KJ_HEADER_WARNINGS
-#pragma GCC system_header
-#endif
-
 #include "common.h"
 #include "tuple.h"
 #include "vector.h"
@@ -38,6 +34,8 @@
 #include <intrin0.h>
 #endif
 #endif
+
+KJ_BEGIN_HEADER
 
 namespace kj {
 
@@ -640,11 +638,15 @@ public:
       return table.rows[*existing];
     } else {
       bool success = false;
+      KJ_DEFER({
+        if (!success) {
+          get<index>(table.indexes).erase(table.rows.asPtr(), pos, params...);
+        }
+      });
       auto& newRow = table.rows.add(createFunc());
       KJ_DEFER({
         if (!success) {
           table.rows.removeLast();
-          get<index>(table.indexes).erase(table.rows.asPtr(), pos, params...);
         }
       });
       if (Table<Row, Indexes...>::template Impl<>::insert(table, pos, newRow, index) == nullptr) {
@@ -890,7 +892,7 @@ uint chooseBucket(uint hash, uint count);
 template <typename Callbacks>
 class HashIndex {
 public:
-  HashIndex() KJ_DEFAULT_CONSTRUCTOR_VS2015_BUGGY
+  HashIndex() = default;
   template <typename... Params>
   HashIndex(Params&&... params): cb(kj::fwd<Params>(params)...) {}
 
@@ -1434,7 +1436,7 @@ inline BTreeImpl::Iterator BTreeImpl::end() const {
 template <typename Callbacks>
 class TreeIndex {
 public:
-  TreeIndex() KJ_DEFAULT_CONSTRUCTOR_VS2015_BUGGY
+  TreeIndex() = default;
   template <typename... Params>
   TreeIndex(Params&&... params): cb(kj::fwd<Params>(params)...) {}
 
@@ -1627,3 +1629,5 @@ private:
 };
 
 } // namespace kj
+
+KJ_END_HEADER

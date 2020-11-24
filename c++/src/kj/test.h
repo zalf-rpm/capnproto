@@ -21,14 +21,12 @@
 
 #pragma once
 
-#if defined(__GNUC__) && !KJ_HEADER_WARNINGS
-#pragma GCC system_header
-#endif
-
 #include "debug.h"
 #include "vector.h"
 #include "function.h"
 #include "windows-sanity.h"  // work-around macro conflict with `ERROR`
+
+KJ_BEGIN_HEADER
 
 namespace kj {
 
@@ -62,7 +60,7 @@ private:
   } KJ_UNIQUE_NAME(testCase); \
   void KJ_UNIQUE_NAME(TestCase)::run()
 
-#if _MSC_VER
+#if _MSC_VER && !defined(__clang__)
 #define KJ_INDIRECT_EXPAND(m, vargs) m vargs
 #define KJ_FAIL_EXPECT(...) \
   KJ_INDIRECT_EXPAND(KJ_LOG, (ERROR , __VA_ARGS__));
@@ -163,3 +161,5 @@ private:
 
 }  // namespace _ (private)
 }  // namespace kj
+
+KJ_END_HEADER

@@ -21,13 +21,16 @@
 
 #if _WIN32
 // Request Vista-level APIs.
-#define WINVER 0x0600
-#define _WIN32_WINNT 0x0600
+#include "win32-api-version.h"
+#elif !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
 #endif
 
 #include "async-io.h"
 #include "async-io-internal.h"
 #include "debug.h"
+#include "io.h"
+#include "miniposix.h"
 #include <kj/compat/gtest.h>
 #include <sys/types.h>
 #if _WIN32
@@ -84,6 +87,162 @@ TEST(AsyncIo, SimpleNetwork) {
 
   EXPECT_EQ("foo", result);
 }
+
+#if !_WIN32  // TODO(soon): Implement NetworkPeerIdentity for Win32.
+TEST(AsyncIo, SimpleNetworkAuthentication) {
+  auto ioContext = setupAsyncIo();
+  auto& network = ioContext.provider->getNetwork();
+
+  Own<ConnectionReceiver> listener;
+  Own<AsyncIoStream> server;
+  Own<AsyncIoStream> client;
+
+  char receiveBuffer[4];
+
+  auto port = newPromiseAndFulfiller<uint>();
+
+  port.promise.then([&](uint portnum) {
+    return network.parseAddress("localhost", portnum);
+  }).then([&](Own<NetworkAddress>&& addr) {
+    auto promise = addr->connectAuthenticated();
+    return promise.then([&,addr=kj::mv(addr)](AuthenticatedStream result) mutable {
+      auto id = result.peerIdentity.downcast<NetworkPeerIdentity>();
+
+      // `addr` was resolved from `localhost` and may contain multiple addresses, but
+      // result.peerIdentity tells us the specific address that was used. So it should be one
+      // of the ones on the list, but only one.
+      KJ_EXPECT(strstr(addr->toString().cStr(), id->getAddress().toString().cStr()) != nullptr);
+      KJ_EXPECT(id->getAddress().toString().findFirst(',') == nullptr);
+
+      client = kj::mv(result.stream);
+
+      // `id` should match client->getpeername().
+      union {
+        struct sockaddr generic;
+        struct sockaddr_in ip4;
+        struct sockaddr_in6 ip6;
+      } rawAddr;
+      uint len = sizeof(rawAddr);
+      client->getpeername(&rawAddr.generic, &len);
+      auto peername = network.getSockaddr(&rawAddr.generic, len);
+      KJ_EXPECT(id->toString() == peername->toString());
+
+      return client->write("foo", 3);
+    });
+  }).detach([](kj::Exception&& exception) {
+    KJ_FAIL_EXPECT(exception);
+  });
+
+  kj::String result = network.parseAddress("*").then([&](Own<NetworkAddress>&& result) {
+    listener = result->listen();
+    port.fulfiller->fulfill(listener->getPort());
+    return listener->acceptAuthenticated();
+  }).then([&](AuthenticatedStream result) {
+    auto id = result.peerIdentity.downcast<NetworkPeerIdentity>();
+    server = kj::mv(result.stream);
+
+    // `id` should match server->getpeername().
+    union {
+      struct sockaddr generic;
+      struct sockaddr_in ip4;
+      struct sockaddr_in6 ip6;
+    } addr;
+    uint len = sizeof(addr);
+    server->getpeername(&addr.generic, &len);
+    auto peername = network.getSockaddr(&addr.generic, len);
+    KJ_EXPECT(id->toString() == peername->toString());
+
+    return server->tryRead(receiveBuffer, 3, 4);
+  }).then([&](size_t n) {
+    EXPECT_EQ(3u, n);
+    return heapString(receiveBuffer, n);
+  }).wait(ioContext.waitScope);
+
+  EXPECT_EQ("foo", result);
+}
+#endif
+
+#if !_WIN32 && !__CYGWIN__  // TODO(someday): Debug why this deadlocks on Cygwin.
+
+#if __ANDROID__
+#define TMPDIR "/data/local/tmp"
+#else
+#define TMPDIR "/tmp"
+#endif
+
+TEST(AsyncIo, UnixSocket) {
+  auto ioContext = setupAsyncIo();
+  auto& network = ioContext.provider->getNetwork();
+
+  auto path = kj::str(TMPDIR "/kj-async-io-test.", getpid());
+  KJ_DEFER(unlink(path.cStr()));
+
+  Own<ConnectionReceiver> listener;
+  Own<AsyncIoStream> server;
+  Own<AsyncIoStream> client;
+
+  char receiveBuffer[4];
+
+  auto ready = newPromiseAndFulfiller<void>();
+
+  ready.promise.then([&]() {
+    return network.parseAddress(kj::str("unix:", path));
+  }).then([&](Own<NetworkAddress>&& addr) {
+    auto promise = addr->connectAuthenticated();
+    return promise.then([&,addr=kj::mv(addr)](AuthenticatedStream result) mutable {
+      auto id = result.peerIdentity.downcast<LocalPeerIdentity>();
+      auto creds = id->getCredentials();
+      KJ_IF_MAYBE(p, creds.pid) {
+        KJ_EXPECT(*p == getpid());
+#if __linux__ || __APPLE__
+      } else {
+        KJ_FAIL_EXPECT("LocalPeerIdentity for unix socket had null PID");
+#endif
+      }
+      KJ_IF_MAYBE(u, creds.uid) {
+        KJ_EXPECT(*u == getuid());
+      } else {
+        KJ_FAIL_EXPECT("LocalPeerIdentity for unix socket had null UID");
+      }
+
+      client = kj::mv(result.stream);
+      return client->write("foo", 3);
+    });
+  }).detach([](kj::Exception&& exception) {
+    KJ_FAIL_EXPECT(exception);
+  });
+
+  kj::String result = network.parseAddress(kj::str("unix:", path))
+      .then([&](Own<NetworkAddress>&& result) {
+    listener = result->listen();
+    ready.fulfiller->fulfill();
+    return listener->acceptAuthenticated();
+  }).then([&](AuthenticatedStream result) {
+    auto id = result.peerIdentity.downcast<LocalPeerIdentity>();
+    auto creds = id->getCredentials();
+    KJ_IF_MAYBE(p, creds.pid) {
+      KJ_EXPECT(*p == getpid());
+#if __linux__ || __APPLE__
+    } else {
+      KJ_FAIL_EXPECT("LocalPeerIdentity for unix socket had null PID");
+#endif
+    }
+    KJ_IF_MAYBE(u, creds.uid) {
+      KJ_EXPECT(*u == getuid());
+    } else {
+      KJ_FAIL_EXPECT("LocalPeerIdentity for unix socket had null UID");
+    }
+
+    server = kj::mv(result.stream);
+    return server->tryRead(receiveBuffer, 3, 4);
+  }).then([&](size_t n) {
+    EXPECT_EQ(3u, n);
+    return heapString(receiveBuffer, n);
+  }).wait(ioContext.waitScope);
+
+  EXPECT_EQ("foo", result);
+}
+#endif
 
 String tryParse(WaitScope& waitScope, Network& network, StringPtr text, uint portHint = 0) {
   return network.parseAddress(text, portHint).wait(waitScope)->toString();
@@ -194,6 +353,46 @@ TEST(AsyncIo, TwoWayPipe) {
   EXPECT_EQ("bar", result2);
 }
 
+TEST(AsyncIo, InMemoryCapabilityPipe) {
+  EventLoop loop;
+  WaitScope waitScope(loop);
+
+  auto pipe = newCapabilityPipe();
+  auto pipe2 = newCapabilityPipe();
+  char receiveBuffer1[4];
+  char receiveBuffer2[4];
+
+  // Expect to receive a stream, then read "foo" from it, then write "bar" to it.
+  Own<AsyncCapabilityStream> receivedStream;
+  auto promise = pipe2.ends[1]->receiveStream()
+      .then([&](Own<AsyncCapabilityStream> stream) {
+    receivedStream = kj::mv(stream);
+    return receivedStream->tryRead(receiveBuffer2, 3, 4);
+  }).then([&](size_t n) {
+    EXPECT_EQ(3u, n);
+    return receivedStream->write("bar", 3).then([&receiveBuffer2,n]() {
+      return heapString(receiveBuffer2, n);
+    });
+  });
+
+  // Send a stream, then write "foo" to the other end of the sent stream, then receive "bar"
+  // from it.
+  kj::String result = pipe2.ends[0]->sendStream(kj::mv(pipe.ends[1]))
+      .then([&]() {
+    return pipe.ends[0]->write("foo", 3);
+  }).then([&]() {
+    return pipe.ends[0]->tryRead(receiveBuffer1, 3, 4);
+  }).then([&](size_t n) {
+    EXPECT_EQ(3u, n);
+    return heapString(receiveBuffer1, n);
+  }).wait(waitScope);
+
+  kj::String result2 = promise.wait(waitScope);
+
+  EXPECT_EQ("bar", result);
+  EXPECT_EQ("foo", result2);
+}
+
 #if !_WIN32 && !__CYGWIN__
 TEST(AsyncIo, CapabilityPipe) {
   auto ioContext = setupAsyncIo();
@@ -233,7 +432,240 @@ TEST(AsyncIo, CapabilityPipe) {
   EXPECT_EQ("bar", result);
   EXPECT_EQ("foo", result2);
 }
-#endif
+
+TEST(AsyncIo, CapabilityPipeBlockedSendStream) {
+  // Check for a bug that existed at one point where if a sendStream() call couldn't complete
+  // immediately, it would fail.
+
+  auto io = setupAsyncIo();
+
+  auto pipe = io.provider->newCapabilityPipe();
+
+  Promise<void> promise = nullptr;
+  Own<AsyncIoStream> endpoint1;
+  uint nonBlockedCount = 0;
+  for (;;) {
+    auto pipe2 = io.provider->newCapabilityPipe();
+    promise = pipe.ends[0]->sendStream(kj::mv(pipe2.ends[0]));
+    if (promise.poll(io.waitScope)) {
+      // Send completed immediately, because there was enough space in the stream.
+      ++nonBlockedCount;
+      promise.wait(io.waitScope);
+    } else {
+      // Send blocked! Let's continue with this promise then!
+      endpoint1 = kj::mv(pipe2.ends[1]);
+      break;
+    }
+  }
+
+  for (uint i KJ_UNUSED: kj::zeroTo(nonBlockedCount)) {
+    // Receive and ignore all the streams that were sent without blocking.
+    pipe.ends[1]->receiveStream().wait(io.waitScope);
+  }
+
+  // Now that write that blocked should have been able to complete.
+  promise.wait(io.waitScope);
+
+  // Now get the one that blocked.
+  auto endpoint2 = pipe.ends[1]->receiveStream().wait(io.waitScope);
+
+  endpoint1->write("foo", 3).wait(io.waitScope);
+  endpoint1->shutdownWrite();
+  KJ_EXPECT(endpoint2->readAllText().wait(io.waitScope) == "foo");
+}
+
+TEST(AsyncIo, CapabilityPipeMultiStreamMessage) {
+  auto ioContext = setupAsyncIo();
+
+  auto pipe = ioContext.provider->newCapabilityPipe();
+  auto pipe2 = ioContext.provider->newCapabilityPipe();
+  auto pipe3 = ioContext.provider->newCapabilityPipe();
+
+  auto streams = heapArrayBuilder<Own<AsyncCapabilityStream>>(2);
+  streams.add(kj::mv(pipe2.ends[0]));
+  streams.add(kj::mv(pipe3.ends[0]));
+
+  ArrayPtr<const byte> secondBuf = "bar"_kj.asBytes();
+  pipe.ends[0]->writeWithStreams("foo"_kj.asBytes(), arrayPtr(&secondBuf, 1), streams.finish())
+      .wait(ioContext.waitScope);
+
+  char receiveBuffer[7];
+  Own<AsyncCapabilityStream> receiveStreams[3];
+  auto result = pipe.ends[1]->tryReadWithStreams(receiveBuffer, 6, 7, receiveStreams, 3)
+      .wait(ioContext.waitScope);
+
+  KJ_EXPECT(result.byteCount == 6);
+  receiveBuffer[6] = '\0';
+  KJ_EXPECT(kj::StringPtr(receiveBuffer) == "foobar");
+
+  KJ_ASSERT(result.capCount == 2);
+
+  receiveStreams[0]->write("baz", 3).wait(ioContext.waitScope);
+  receiveStreams[0] = nullptr;
+  KJ_EXPECT(pipe2.ends[1]->readAllText().wait(ioContext.waitScope) == "baz");
+
+  pipe3.ends[1]->write("qux", 3).wait(ioContext.waitScope);
+  pipe3.ends[1] = nullptr;
+  KJ_EXPECT(receiveStreams[1]->readAllText().wait(ioContext.waitScope) == "qux");
+}
+
+TEST(AsyncIo, ScmRightsTruncatedOdd) {
+  // Test that if we send two FDs over a unix socket, but the receiving end only receives one, we
+  // don't leak the other FD.
+
+  auto io = setupAsyncIo();
+
+  auto capPipe = io.provider->newCapabilityPipe();
+
+  int pipeFds[2];
+  KJ_SYSCALL(miniposix::pipe(pipeFds));
+  kj::AutoCloseFd in1(pipeFds[0]);
+  kj::AutoCloseFd out1(pipeFds[1]);
+
+  KJ_SYSCALL(miniposix::pipe(pipeFds));
+  kj::AutoCloseFd in2(pipeFds[0]);
+  kj::AutoCloseFd out2(pipeFds[1]);
+
+  {
+    AutoCloseFd sendFds[2] = { kj::mv(out1), kj::mv(out2) };
+    capPipe.ends[0]->writeWithFds("foo"_kj.asBytes(), nullptr, sendFds).wait(io.waitScope);
+  }
+
+  {
+    char buffer[4];
+    AutoCloseFd fdBuffer[1];
+    auto result = capPipe.ends[1]->tryReadWithFds(buffer, 3, 3, fdBuffer, 1).wait(io.waitScope);
+    KJ_ASSERT(result.capCount == 1);
+    kj::FdOutputStream(fdBuffer[0].get()).write("bar", 3);
+  }
+
+  // We want to carefully verify that out1 and out2 were closed, without deadlocking if they
+  // weren't. So we manually set nonblocking mode and then issue read()s.
+  KJ_SYSCALL(fcntl(in1, F_SETFL, O_NONBLOCK));
+  KJ_SYSCALL(fcntl(in2, F_SETFL, O_NONBLOCK));
+
+  char buffer[4];
+  ssize_t n;
+
+  // First we read "bar" from in1.
+  KJ_NONBLOCKING_SYSCALL(n = read(in1, buffer, 4));
+  KJ_ASSERT(n == 3);
+  buffer[3] = '\0';
+  KJ_ASSERT(kj::StringPtr(buffer) == "bar");
+
+  // Now it should be EOF.
+  KJ_NONBLOCKING_SYSCALL(n = read(in1, buffer, 4));
+  if (n < 0) {
+    KJ_FAIL_ASSERT("out1 was not closed");
+  }
+  KJ_ASSERT(n == 0);
+
+  // Second pipe should have been closed implicitly because we didn't provide space to receive it.
+  KJ_NONBLOCKING_SYSCALL(n = read(in2, buffer, 4));
+  if (n < 0) {
+    KJ_FAIL_ASSERT("out2 was not closed. This could indicate that your operating system kernel is "
+        "buggy and leaks file descriptors when an SCM_RIGHTS message is truncated. FreeBSD was "
+        "known to do this until late 2018, while MacOS still has this bug as of this writing in "
+        "2019. However, KJ works around the problem on those platforms. You need to enable the "
+        "same work-around for your OS -- search for 'SCM_RIGHTS' in src/kj/async-io-unix.c++.");
+  }
+  KJ_ASSERT(n == 0);
+}
+
+#if !__aarch64__
+// This test fails under qemu-user, probably due to a bug in qemu's syscall emulation rather than
+// a bug in the kernel. We don't have a good way to detect qemu so we just skip the test on aarch64
+// in general.
+
+TEST(AsyncIo, ScmRightsTruncatedEven) {
+  // Test that if we send three FDs over a unix socket, but the receiving end only receives two, we
+  // don't leak the third FD. This is different from the send-two-receive-one case in that
+  // CMSG_SPACE() on many systems rounds up such that there is always space for an even number of
+  // FDs. In that case the other test only verifies that our userspace code to close unwanted FDs
+  // is correct, whereas *this* test really verifies that the *kernel* properly closes truncated
+  // FDs.
+
+  auto io = setupAsyncIo();
+
+  auto capPipe = io.provider->newCapabilityPipe();
+
+  int pipeFds[2];
+  KJ_SYSCALL(miniposix::pipe(pipeFds));
+  kj::AutoCloseFd in1(pipeFds[0]);
+  kj::AutoCloseFd out1(pipeFds[1]);
+
+  KJ_SYSCALL(miniposix::pipe(pipeFds));
+  kj::AutoCloseFd in2(pipeFds[0]);
+  kj::AutoCloseFd out2(pipeFds[1]);
+
+  KJ_SYSCALL(miniposix::pipe(pipeFds));
+  kj::AutoCloseFd in3(pipeFds[0]);
+  kj::AutoCloseFd out3(pipeFds[1]);
+
+  {
+    AutoCloseFd sendFds[3] = { kj::mv(out1), kj::mv(out2), kj::mv(out3) };
+    capPipe.ends[0]->writeWithFds("foo"_kj.asBytes(), nullptr, sendFds).wait(io.waitScope);
+  }
+
+  {
+    char buffer[4];
+    AutoCloseFd fdBuffer[2];
+    auto result = capPipe.ends[1]->tryReadWithFds(buffer, 3, 3, fdBuffer, 2).wait(io.waitScope);
+    KJ_ASSERT(result.capCount == 2);
+    kj::FdOutputStream(fdBuffer[0].get()).write("bar", 3);
+    kj::FdOutputStream(fdBuffer[1].get()).write("baz", 3);
+  }
+
+  // We want to carefully verify that out1, out2, and out3 were closed, without deadlocking if they
+  // weren't. So we manually set nonblocking mode and then issue read()s.
+  KJ_SYSCALL(fcntl(in1, F_SETFL, O_NONBLOCK));
+  KJ_SYSCALL(fcntl(in2, F_SETFL, O_NONBLOCK));
+  KJ_SYSCALL(fcntl(in3, F_SETFL, O_NONBLOCK));
+
+  char buffer[4];
+  ssize_t n;
+
+  // First we read "bar" from in1.
+  KJ_NONBLOCKING_SYSCALL(n = read(in1, buffer, 4));
+  KJ_ASSERT(n == 3);
+  buffer[3] = '\0';
+  KJ_ASSERT(kj::StringPtr(buffer) == "bar");
+
+  // Now it should be EOF.
+  KJ_NONBLOCKING_SYSCALL(n = read(in1, buffer, 4));
+  if (n < 0) {
+    KJ_FAIL_ASSERT("out1 was not closed");
+  }
+  KJ_ASSERT(n == 0);
+
+  // Next we read "baz" from in2.
+  KJ_NONBLOCKING_SYSCALL(n = read(in2, buffer, 4));
+  KJ_ASSERT(n == 3);
+  buffer[3] = '\0';
+  KJ_ASSERT(kj::StringPtr(buffer) == "baz");
+
+  // Now it should be EOF.
+  KJ_NONBLOCKING_SYSCALL(n = read(in2, buffer, 4));
+  if (n < 0) {
+    KJ_FAIL_ASSERT("out2 was not closed");
+  }
+  KJ_ASSERT(n == 0);
+
+  // Third pipe should have been closed implicitly because we didn't provide space to receive it.
+  KJ_NONBLOCKING_SYSCALL(n = read(in3, buffer, 4));
+  if (n < 0) {
+    KJ_FAIL_ASSERT("out3 was not closed. This could indicate that your operating system kernel is "
+        "buggy and leaks file descriptors when an SCM_RIGHTS message is truncated. FreeBSD was "
+        "known to do this until late 2018, while MacOS still has this bug as of this writing in "
+        "2019. However, KJ works around the problem on those platforms. You need to enable the "
+        "same work-around for your OS -- search for 'SCM_RIGHTS' in src/kj/async-io-unix.c++.");
+  }
+  KJ_ASSERT(n == 0);
+}
+
+#endif  // !__aarch64__
+
+#endif  // !_WIN32 && !__CYGWIN__
 
 TEST(AsyncIo, PipeThread) {
   auto ioContext = setupAsyncIo();
@@ -466,6 +898,10 @@ TEST(AsyncIo, Udp) {
       }
     }
 
+#if __APPLE__
+// On MacOS, `CMSG_SPACE(0)` triggers a bogus warning.
+#pragma GCC diagnostic ignored "-Wnull-pointer-arithmetic"
+#endif
     // See what happens if there's not enough space even for the cmsghdr.
     capacity.ancillary = CMSG_SPACE(0) - 8;
     recv1 = port1->makeReceiver(capacity);
@@ -914,7 +1350,8 @@ KJ_TEST("Userland pipe with limit") {
   }
 
   // Further writes throw and reads return EOF.
-  KJ_EXPECT_THROW_MESSAGE("abortRead() has been called", pipe.out->write("baz", 3).wait(ws));
+  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE(
+      "abortRead() has been called", pipe.out->write("baz", 3).wait(ws));
   KJ_EXPECT(pipe.in->readAllText().wait(ws) == "");
 }
 
@@ -943,7 +1380,34 @@ KJ_TEST("Userland pipe pumpTo with limit") {
   }
 
   // Further writes throw.
-  KJ_EXPECT_THROW_MESSAGE("abortRead() has been called", pipe.out->write("baz", 3).wait(ws));
+  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE(
+      "abortRead() has been called", pipe.out->write("baz", 3).wait(ws));
+}
+
+KJ_TEST("Userland pipe pump into zero-limited pipe, no data to pump") {
+  kj::EventLoop loop;
+  WaitScope ws(loop);
+
+  auto pipe = newOneWayPipe();
+  auto pipe2 = newOneWayPipe(uint64_t(0));
+  auto pumpPromise = KJ_ASSERT_NONNULL(pipe2.out->tryPumpFrom(*pipe.in));
+
+  expectRead(*pipe2.in, "");
+  pipe.out = nullptr;
+  KJ_EXPECT(pumpPromise.wait(ws) == 0);
+}
+
+KJ_TEST("Userland pipe pump into zero-limited pipe, data is pumped") {
+  kj::EventLoop loop;
+  WaitScope ws(loop);
+
+  auto pipe = newOneWayPipe();
+  auto pipe2 = newOneWayPipe(uint64_t(0));
+  auto pumpPromise = KJ_ASSERT_NONNULL(pipe2.out->tryPumpFrom(*pipe.in));
+
+  expectRead(*pipe2.in, "");
+  auto writePromise = pipe.out->write("foo", 3);
+  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("abortRead() has been called", pumpPromise.wait(ws));
 }
 
 KJ_TEST("Userland pipe gather write") {
@@ -1420,6 +1884,55 @@ KJ_TEST("Userland pipe tryPumpFrom to pumpTo for same amount fulfills simultaneo
   KJ_EXPECT(pumpPromise2.wait(ws) == 6);
 }
 
+KJ_TEST("Userland pipe multi-part write doesn't quit early") {
+  kj::EventLoop loop;
+  WaitScope ws(loop);
+
+  auto pipe = newOneWayPipe();
+
+  auto readPromise = expectRead(*pipe.in, "foo");
+
+  kj::ArrayPtr<const byte> pieces[2] = { "foobar"_kj.asBytes(), "baz"_kj.asBytes() };
+  auto writePromise = pipe.out->write(pieces);
+
+  readPromise.wait(ws);
+  KJ_EXPECT(!writePromise.poll(ws));
+  expectRead(*pipe.in, "bar").wait(ws);
+  KJ_EXPECT(!writePromise.poll(ws));
+  expectRead(*pipe.in, "baz").wait(ws);
+  writePromise.wait(ws);
+}
+
+KJ_TEST("Userland pipe BlockedRead gets empty tryPumpFrom") {
+  kj::EventLoop loop;
+  WaitScope ws(loop);
+
+  auto pipe = newOneWayPipe();
+  auto pipe2 = newOneWayPipe();
+
+  // First start a read from the back end.
+  char buffer[4];
+  auto readPromise = pipe2.in->tryRead(buffer, 1, 4);
+
+  // Now arrange a pump between the pipes, using tryPumpFrom().
+  auto pumpPromise = KJ_ASSERT_NONNULL(pipe2.out->tryPumpFrom(*pipe.in));
+
+  // Disconnect the front pipe, causing EOF on the pump.
+  pipe.out = nullptr;
+
+  // The pump should have produced zero bytes.
+  KJ_EXPECT(pumpPromise.wait(ws) == 0);
+
+  // The read is incomplete.
+  KJ_EXPECT(!readPromise.poll(ws));
+
+  // A subsequent write() completes the read.
+  pipe2.out->write("foo", 3).wait(ws);
+  KJ_EXPECT(readPromise.wait(ws) == 3);
+  buffer[3] = '\0';
+  KJ_EXPECT(kj::StringPtr(buffer, 3) == "foo");
+}
+
 constexpr static auto TEE_MAX_CHUNK_SIZE = 1 << 14;
 // AsyncTee::MAX_CHUNK_SIZE, 16k as of this writing
 
@@ -1597,7 +2110,7 @@ KJ_TEST("Userland tee read exception propagation") {
 
   // The next read sees the exception.
   KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("pipe ended prematurely",
-      left->tryRead(leftBuf, 1, size(leftBuf)).wait(ws));
+      left->tryRead(leftBuf, 1, size(leftBuf)).ignoreResult().wait(ws));
 
   // Test tryGetLength() here -- the unread branch still sees the original length value.
   KJ_EXPECT(KJ_ASSERT_NONNULL(left->tryGetLength()) == 1);
@@ -1609,13 +2122,13 @@ KJ_TEST("Userland tee read exception propagation") {
   KJ_EXPECT(rightPromise.wait(ws) == 6);
   KJ_EXPECT(memcmp(rightBuf, "foobar", 6) == 0);
   KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("pipe ended prematurely",
-      right->tryRead(rightBuf, 1, size(leftBuf)).wait(ws));
+      right->tryRead(rightBuf, 1, size(leftBuf)).ignoreResult().wait(ws));
 
   // Further reads should all see the exception again.
   KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("pipe ended prematurely",
-      left->tryRead(leftBuf, 1, size(leftBuf)).wait(ws));
+      left->tryRead(leftBuf, 1, size(leftBuf)).ignoreResult().wait(ws));
   KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("pipe ended prematurely",
-      right->tryRead(rightBuf, 1, size(leftBuf)).wait(ws));
+      right->tryRead(rightBuf, 1, size(leftBuf)).ignoreResult().wait(ws));
 }
 
 KJ_TEST("Userland tee read exception propagation w/ data loss") {
@@ -1635,14 +2148,15 @@ KJ_TEST("Userland tee read exception propagation w/ data loss") {
   writePromise.wait(ws);
   // Destroying the output side should force an exception, since we didn't reach our minBytes.
   pipe.out = nullptr;
-  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("pipe ended prematurely", leftPromise.wait(ws));
+  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE(
+      "pipe ended prematurely", leftPromise.ignoreResult().wait(ws));
 
   // And we should see a short read here, too. In fact, we shouldn't see anything: the short read
   // above read all of the pipe's data, but then failed to buffer it because it encountered an
   // exception. It buffered the exception, instead.
   uint8_t rightBuf[7] = { 0 };
   KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("pipe ended prematurely",
-      right->tryRead(rightBuf, 1, 1).wait(ws));
+      right->tryRead(rightBuf, 1, 1).ignoreResult().wait(ws));
 }
 
 KJ_TEST("Userland tee read into different buffer sizes") {
@@ -1945,8 +2459,10 @@ KJ_TEST("Userland tee pump read exception propagation") {
     // loop actually sees the exception.
     auto leftAllPromise = leftPipe.in->readAllText();
     auto rightAllPromise = rightPipe.in->readAllText();
-    KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("pipe ended prematurely", leftPumpPromise.wait(ws));
-    KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("pipe ended prematurely", rightPumpPromise.wait(ws));
+    KJ_EXPECT_THROW_RECOVERABLE_MESSAGE(
+        "pipe ended prematurely", leftPumpPromise.ignoreResult().wait(ws));
+    KJ_EXPECT_THROW_RECOVERABLE_MESSAGE(
+        "pipe ended prematurely", rightPumpPromise.ignoreResult().wait(ws));
 
     // Make sure we got the data on the destination pipes.
     KJ_EXPECT(!leftAllPromise.poll(ws));
@@ -1983,8 +2499,10 @@ KJ_TEST("Userland tee pump read exception propagation") {
 
     // Relieve backpressure in the tee to see the exceptions.
     auto leftAllPromise = leftPipe.in->readAllText();
-    KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("pipe ended prematurely", leftPumpPromise.wait(ws));
-    KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("pipe ended prematurely", rightReadPromise.wait(ws));
+    KJ_EXPECT_THROW_RECOVERABLE_MESSAGE(
+        "pipe ended prematurely", leftPumpPromise.ignoreResult().wait(ws));
+    KJ_EXPECT_THROW_RECOVERABLE_MESSAGE(
+        "pipe ended prematurely", rightReadPromise.ignoreResult().wait(ws));
 
     // Make sure we got the data on the destination pipe.
     KJ_EXPECT(!leftAllPromise.poll(ws));
@@ -2014,7 +2532,8 @@ KJ_TEST("Userland tee pump write exception propagation") {
   // Induce a write exception in the right branch pump. It should propagate to the right pump
   // promise.
   rightPipe.in = nullptr;
-  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("read end of pipe was aborted", rightPumpPromise.wait(ws));
+  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE(
+      "read end of pipe was aborted", rightPumpPromise.ignoreResult().wait(ws));
 
   // The left pump promise does not see the right branch's write exception.
   KJ_EXPECT(!leftPumpPromise.poll(ws));
@@ -2045,9 +2564,9 @@ KJ_TEST("Userland tee pump cancellation implies write cancellation") {
   leftPumpPromise = nullptr;
   // It should cancel its write operations, so it should now be safe to destroy the output stream to
   // which it was pumping.
-  try {
+  KJ_IF_MAYBE(exception, kj::runCatchingExceptions([&]() {
     leftPipe.out = nullptr;
-  } catch (const Exception& exception) {
+  })) {
     KJ_FAIL_EXPECT("write promises were not canceled", exception);
   }
 }
@@ -2179,7 +2698,7 @@ KJ_TEST("Userspace TwoWayPipe whenWriteDisconnected()") {
 }
 
 #if !_WIN32  // We don't currently support detecting disconnect with IOCP.
-#if !__CYGWIN__  // TODO(soon): Figure out why whenWriteDisconnected() doesn't work on Cygwin.
+#if !__CYGWIN__  // TODO(someday): Figure out why whenWriteDisconnected() doesn't work on Cygwin.
 
 KJ_TEST("OS OneWayPipe whenWriteDisconnected()") {
   auto io = setupAsyncIo();
@@ -2213,9 +2732,11 @@ KJ_TEST("OS TwoWayPipe whenWriteDisconnected()") {
   abortedPromise.wait(io.waitScope);
 
   char buffer[4];
-  KJ_ASSERT(pipe.ends[0]->tryRead(&buffer, sizeof(buffer), sizeof(buffer)).wait(io.waitScope) == 3);
+  KJ_ASSERT(pipe.ends[0]->tryRead(&buffer, 3, 3).wait(io.waitScope) == 3);
   buffer[3] = '\0';
   KJ_EXPECT(buffer == "bar"_kj);
+
+  // Note: Reading any further in pipe.ends[0] would throw "connection reset".
 }
 
 KJ_TEST("import socket FD that's already broken") {

@@ -19,22 +19,24 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+#if _WIN32 || __CYGWIN__
+#include "win32-api-version.h"
+#endif
+
 #include "debug.h"
 #include <stdlib.h>
 #include <ctype.h>
 #include <string.h>
 #include <errno.h>
 
-#if _WIN32
+#if _WIN32 || __CYGWIN__
+#if !__CYGWIN__
 #define strerror_r(errno,buf,len) strerror_s(buf,len,errno)
-#define NOMINMAX 1
-#define WIN32_LEAN_AND_MEAN 1
-#define NOSERVICE 1
-#define NOMCX 1
-#define NOIME 1
+#endif
 #include <windows.h>
 #include "windows-sanity.h"
 #include "encoding.h"
+#include <wchar.h>
 #endif
 
 namespace kj {
@@ -133,7 +135,7 @@ Exception::Type typeOfErrno(int error) {
   }
 }
 
-#if _WIN32
+#if _WIN32 || __CYGWIN__
 
 Exception::Type typeOfWin32Error(DWORD error) {
   switch (error) {
@@ -329,7 +331,7 @@ Debug::Fault::~Fault() noexcept(false) {
   if (exception != nullptr) {
     Exception copy = mv(*exception);
     delete exception;
-    throwRecoverableException(mv(copy), 2);
+    throwRecoverableException(mv(copy), 1);
   }
 }
 
@@ -337,8 +339,8 @@ void Debug::Fault::fatal() {
   Exception copy = mv(*exception);
   delete exception;
   exception = nullptr;
-  throwFatalException(mv(copy), 2);
-  abort();
+  throwFatalException(mv(copy), 1);
+  KJ_KNOWN_UNREACHABLE(abort());
 }
 
 void Debug::Fault::init(
@@ -355,7 +357,7 @@ void Debug::Fault::init(
       makeDescriptionImpl(SYSCALL, condition, osErrorNumber, nullptr, macroArgs, argValues));
 }
 
-#if _WIN32
+#if _WIN32 || __CYGWIN__
 void Debug::Fault::init(
     const char* file, int line, Win32Result osErrorNumber,
     const char* condition, const char* macroArgs, ArrayPtr<String> argValues) {
@@ -401,7 +403,7 @@ int Debug::getOsErrorNumber(bool nonblocking) {
        : result;
 }
 
-#if _WIN32
+#if _WIN32 || __CYGWIN__
 uint Debug::getWin32ErrorCode() {
   return ::GetLastError();
 }

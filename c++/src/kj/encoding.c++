@@ -239,7 +239,7 @@ EncodingResult<String> decodeUtf32(ArrayPtr<const char32_t> utf16) {
     }
 
   error:
-    result.addAll(StringPtr(u8"\ufffd"));
+    result.addAll(StringPtr(reinterpret_cast<const char *>(u8"\ufffd")));
     hadErrors = true;
   }
 
@@ -852,7 +852,7 @@ typedef enum {
   step_a, step_b, step_c, step_d
 } base64_decodestep;
 
-typedef struct {
+struct base64_decodestate {
   bool hadErrors = false;
   size_t nPaddingBytesSeen = 0;
   // Output state. `nPaddingBytesSeen` is not guaranteed to be correct if `hadErrors` is true. It is
@@ -861,7 +861,7 @@ typedef struct {
 
   base64_decodestep step = step_a;
   char plainchar = 0;
-} base64_decodestate;
+};
 
 int base64_decode_value(char value_in) {
   // Returns either the fragment value or: -1 on whitespace, -2 on padding, -3 on invalid input.
@@ -999,6 +999,26 @@ EncodingResult<Array<byte>> decodeBase64(ArrayPtr<const char> input) {
   }
 
   return EncodingResult<Array<byte>>(kj::mv(output), state.hadErrors);
+}
+
+String encodeBase64Url(ArrayPtr<const byte> bytes) {
+  // TODO(perf): Rewrite as single pass?
+  // TODO(someday): Write decoder?
+
+  auto base64 = kj::encodeBase64(bytes);
+
+  for (char& c: base64) {
+    if (c == '+') c = '-';
+    if (c == '/') c = '_';
+  }
+
+  // Remove trailing '='s.
+  kj::ArrayPtr<const char> slice = base64;
+  while (slice.size() > 0 && slice.back() == '=') {
+    slice = slice.slice(0, slice.size() - 1);
+  }
+
+  return kj::str(slice);
 }
 
 } // namespace kj
